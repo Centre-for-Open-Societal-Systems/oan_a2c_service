@@ -71,3 +71,12 @@ ipAllowlist:
 # Localhost only until the A2C UI hosts are confirmed.
 corsOriginRegexes:
   - https?://localhost(:[0-9]+)?
+
+# The Frappe desk (/app) on its own host, sent to the frappe nginx Service (templates/desk.yaml). Public on
+# this dev instance; `allowlist` (CIDRs) restricts it, `enabled: false` removes it.
+desk:
+  enabled: true
+  host: a2c-service-desk.{{ .Values.global.baseDomain }}
+  serviceName: a2c-frappe
+  port: 8080
+  allowlist: []
