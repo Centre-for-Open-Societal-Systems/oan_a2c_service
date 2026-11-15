@@ -128,6 +128,9 @@ TIER_OVERRIDES = {
 	("POST", "/v1/auth/password/forgot"): "public-auth",
 	("POST", "/v1/auth/password/reset"): "public-auth",
 	("POST", "/v1/auth/password/initial"): "public-auth",
+	# Tiers of oan_auth_service (gw.AUTH_TIERS), as the other OAN apps throttle them.
+	("GET", "/v1/auth/iam/providers"): "auth-public-read",
+	("POST", "/v1/auth/iam/login"): "auth-credentials",
 	("PATCH", "/v1/me/password"): "authenticated-core",
 	("GET", "/v1/auth/me"): "authenticated-core",
 	("GET", "/v1/me/profile"): "authenticated-core",
@@ -160,6 +163,8 @@ TIER_OVERRIDES = {
 	("PUT", "/v1/banks/me/products/{id}/tags"): "bank-partner-standard",
 	("PUT", "/v1/banks/me/products/{id}/attributes"): "bank-partner-standard",
 	("GET", "/v1/taxonomy/categories"): "authenticated-core",
+	# Public area lookup for the onboarding forms.
+	("GET", "/v1/administrative-areas"): "auth-public-read",
 	("GET", "/v1/taxonomy/tags"): "authenticated-core",
 	("GET", "/v1/taxonomy/attributes"): "authenticated-core",
 	("POST", "/v1/admin/taxonomy/categories"): "crm-internal",
@@ -222,6 +227,7 @@ TIER_OVERRIDES = {
 	("GET", "/v1/consent/partners/me/allowed-field-ids"): "bank-partner-standard",
 	("POST", "/v1/consent/otp"): "bank-partner-standard",
 	("POST", "/v1/consent/otp/verify"): "bank-partner-standard",
+	("POST", "/v1/consent/otp/resend"): "bank-partner-standard",
 	("POST", "/v1/consent/requests"): "bank-partner-standard",
 	("POST", "/v1/webhooks/consent-data"): "webhooks-inbound",
 	# Domain 09: Notifications
@@ -392,7 +398,7 @@ def main():
 	doc = gw.build_document(
 		routes,
 		app=APP,
-		tiers=TIERS,
+		tiers={**TIERS, **gw.AUTH_TIERS},
 		api_upstream=API_UPSTREAM,
 		service_plugins=gw.service_plugins(
 			methods="GET,POST,PATCH,PUT,DELETE,OPTIONS", credentials=True, max_body_mb=20

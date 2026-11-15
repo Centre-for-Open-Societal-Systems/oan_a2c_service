@@ -11,6 +11,125 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingressClassName | quote }}
   http:
+  - name: auth-credentials-public-post
+    match:
+{{- if .Values.hosts }}
+      hosts:
+{{- range .Values.hosts }}
+      - {{ tpl . $ | quote }}
+{{- end }}
+{{- end }}
+      paths:
+      - /v1/auth/iam/login
+      methods:
+      - POST
+    plugins:
+    - name: cors
+      enable: true
+      config:
+        allow_origins: https://cors-by-regex-only.invalid
+        allow_origins_by_regex:
+{{- range .Values.corsOriginRegexes }}
+        - {{ printf "^(?:%s)$" . | quote }}
+{{- end }}
+        allow_methods: GET,POST,PATCH,PUT,DELETE,OPTIONS
+        allow_headers: Authorization,Content-Type,X-Request-Id,X-CSRF-Token
+        allow_credential: true
+        max_age: 3600
+    - name: client-control
+      enable: true
+      config:
+        max_body_size: 20971520
+    - name: proxy-rewrite
+      enable: true
+      config:
+        regex_uri:
+        - ^/(v[0-9]+)/(.*)
+        - /api/$1/$2
+    - name: limit-count
+      enable: true
+      config:
+        rules:
+        - count: 30
+          time_window: 60
+          key: $remote_addr:min
+        - count: 300
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: {{ required "redis.host is required" .Values.redis.host | quote }}
+        redis_port: 6379
+        allow_degradation: false
+{{- if .Values.web.externalHosts }}
+    upstreams:
+    - name: {{ required "web.serviceName is required" .Values.web.serviceName | quote }}
+{{- else }}
+    backends:
+    - serviceName: {{ required "web.serviceName is required" .Values.web.serviceName | quote }}
+      servicePort: {{ .Values.web.port }}
+{{- end }}
+  - name: auth-public-read-public-get
+    match:
+{{- if .Values.hosts }}
+      hosts:
+{{- range .Values.hosts }}
+      - {{ tpl . $ | quote }}
+{{- end }}
+{{- end }}
+      paths:
+      - /v1/administrative-areas
+      - /v1/auth/iam/providers
+      methods:
+      - GET
+    plugins:
+    - name: cors
+      enable: true
+      config:
+        allow_origins: https://cors-by-regex-only.invalid
+        allow_origins_by_regex:
+{{- range .Values.corsOriginRegexes }}
+        - {{ printf "^(?:%s)$" . | quote }}
+{{- end }}
+        allow_methods: GET,POST,PATCH,PUT,DELETE,OPTIONS
+        allow_headers: Authorization,Content-Type,X-Request-Id,X-CSRF-Token
+        allow_credential: true
+        max_age: 3600
+    - name: client-control
+      enable: true
+      config:
+        max_body_size: 20971520
+    - name: proxy-rewrite
+      enable: true
+      config:
+        regex_uri:
+        - ^/(v[0-9]+)/(.*)
+        - /api/$1/$2
+    - name: limit-count
+      enable: true
+      config:
+        rules:
+        - count: 120
+          time_window: 60
+          key: $remote_addr:min
+        - count: 2000
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: {{ required "redis.host is required" .Values.redis.host | quote }}
+        redis_port: 6379
+        allow_degradation: true
+{{- if .Values.web.externalHosts }}
+    upstreams:
+    - name: {{ required "web.serviceName is required" .Values.web.serviceName | quote }}
+{{- else }}
+    backends:
+    - serviceName: {{ required "web.serviceName is required" .Values.web.serviceName | quote }}
+      servicePort: {{ .Values.web.port }}
+{{- end }}
   - name: authenticated-core-bearer-delete
     match:
 {{- if .Values.hosts }}
@@ -351,8 +470,8 @@ spec:
       - /v1/banks/me/team
       - /v1/banks/me/team/:userId/password-reset
       - /v1/consent/otp
-      - /v1/consent/otp/verify
       - /v1/consent/otp/resend
+      - /v1/consent/otp/verify
       - /v1/consent/requests
       methods:
       - POST
@@ -1392,6 +1511,8 @@ spec:
       paths:
       - /v1/admin
       - /v1/admin/*
+      - /v1/administrative-areas
+      - /v1/administrative-areas/*
       - /v1/applications
       - /v1/applications/*
       - /v1/auth

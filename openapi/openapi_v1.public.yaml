@@ -314,6 +314,74 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/InitialPasswordRequest'
+  /v1/auth/iam/providers:
+    get:
+      summary: List login options
+      tags:
+      - Identity & Access
+      operationId: get_v1_auth_iam_providers
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/StandardSuccessResponse'
+                - type: object
+                  properties:
+                    data:
+                      $ref: '#/components/schemas/IAMProvidersData'
+        '400':
+          $ref: '#/components/responses/400ValidationError'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '429':
+          $ref: '#/components/responses/429RateLimited'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+      security: []
+  /v1/auth/iam/login:
+    post:
+      summary: Start a login option
+      tags:
+      - Identity & Access
+      operationId: post_v1_auth_iam_login
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/StandardSuccessResponse'
+                - type: object
+                  properties:
+                    data:
+                      $ref: '#/components/schemas/IAMLoginData'
+        '400':
+          $ref: '#/components/responses/400ValidationError'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '429':
+          $ref: '#/components/responses/429RateLimited'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IAMLoginRequest'
   /v1/me/password:
     patch:
       summary: Change the current user's password
@@ -4778,6 +4846,21 @@ components:
       - current_password
       - new_password
       description: Replace a temporary password. No token is needed or issued; sign in afterwards.
+    IAMLoginRequest:
+      type: object
+      properties:
+        key:
+          type: string
+          maxLength: 64
+          description: Key of an enabled login option, e.g. `agent`. Optional if only one IAM option is
+            enabled.
+        return_url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: Absolute http(s) URL IAM sends the browser to after login
+      required:
+      - return_url
     ChangePasswordRequest:
       type: object
       properties:
@@ -5867,6 +5950,53 @@ components:
       - full_name
       - roles
       description: Introspected user identity and profile claims
+    IAMProvidersData:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                example: agent
+                description: '`local` is this app''s own login form'
+              label:
+                type: string
+                example: Agent
+              icon_url:
+                type: string
+                description: Empty if the option has no icon
+            required:
+            - key
+            - label
+            - icon_url
+          description: Enabled login options (`OAN IAM Service` rows) in display order
+        default_provider:
+          type: string
+          nullable: true
+          description: Key of the only enabled IAM login option, else null
+      required:
+      - providers
+      - default_provider
+    IAMLoginData:
+      type: object
+      properties:
+        redirect_url:
+          type: string
+          description: Identity provider URL to send the browser to
+        iam:
+          type: string
+          example: agent
+          description: Key of the login option started
+        cookie_prefix:
+          type: string
+          nullable: true
+          description: After the callback the access token is in the `<cookie_prefix>X-Access-Token` cookie
+      required:
+      - redirect_url
+      - iam
     ProfileData:
       type: object
       properties:
