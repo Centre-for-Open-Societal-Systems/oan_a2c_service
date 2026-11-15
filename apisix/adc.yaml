@@ -35,6 +35,59 @@ services:
       - ^/(v[0-9]+)/(.*)
       - /api/$1/$2
   routes:
+  - name: oan-a2c-auth-credentials-public-post
+    description: Credential-sensitive endpoints (login, register, reset). Per-IP limit against stuffing,
+      loose enough for users sharing one address behind NAT; per-account limits are enforced by the app.
+      Rejects requests when the limiter store is down.
+    labels:
+      app: oan-a2c
+      tier: auth-credentials
+      auth: public
+    uris:
+    - /v1/auth/iam/login
+    methods:
+    - POST
+    plugins:
+      limit-count:
+        rules:
+        - count: 30
+          time_window: 60
+          key: $remote_addr:min
+        - count: 300
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: redis
+        redis_port: 6379
+        allow_degradation: false
+  - name: oan-a2c-auth-public-read-public-get
+    description: Public discovery and health check endpoints.
+    labels:
+      app: oan-a2c
+      tier: auth-public-read
+      auth: public
+    uris:
+    - /v1/administrative-areas
+    - /v1/auth/iam/providers
+    methods:
+    - GET
+    plugins:
+      limit-count:
+        rules:
+        - count: 120
+          time_window: 60
+          key: $remote_addr:min
+        - count: 2000
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: redis
+        redis_port: 6379
+        allow_degradation: true
   - name: oan-a2c-authenticated-core-bearer-delete
     description: Identity/profile/notifications -- any signed-in caller, low cost per call.
     labels:
@@ -203,8 +256,8 @@ services:
     - /v1/banks/me/team
     - /v1/banks/me/team/:userId/password-reset
     - /v1/consent/otp
-    - /v1/consent/otp/verify
     - /v1/consent/otp/resend
+    - /v1/consent/otp/verify
     - /v1/consent/requests
     methods:
     - POST
@@ -701,6 +754,8 @@ services:
     uris:
     - /v1/admin
     - /v1/admin/*
+    - /v1/administrative-areas
+    - /v1/administrative-areas/*
     - /v1/applications
     - /v1/applications/*
     - /v1/auth

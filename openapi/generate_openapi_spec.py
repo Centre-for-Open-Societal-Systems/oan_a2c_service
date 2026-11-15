@@ -303,6 +303,53 @@ data(
 data("LogoutData", _LOGOUT)
 data("UserMeData", _USER_ME)
 data(
+	"IAMProvidersData",
+	{
+		"type": "object",
+		"properties": {
+			"providers": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"key": {
+							"type": "string",
+							"example": "agent",
+							"description": "`local` is this app's own login form",
+						},
+						"label": {"type": "string", "example": "Agent"},
+						"icon_url": {"type": "string", "description": "Empty if the option has no icon"},
+					},
+					"required": ["key", "label", "icon_url"],
+				},
+				"description": "Enabled login options (`OAN IAM Service` rows) in display order",
+			},
+			"default_provider": {
+				"type": "string",
+				"nullable": True,
+				"description": "Key of the only enabled IAM login option, else null",
+			},
+		},
+		"required": ["providers", "default_provider"],
+	},
+)
+data(
+	"IAMLoginData",
+	{
+		"type": "object",
+		"properties": {
+			"redirect_url": {"type": "string", "description": "Identity provider URL to send the browser to"},
+			"iam": {"type": "string", "example": "agent", "description": "Key of the login option started"},
+			"cookie_prefix": {
+				"type": "string",
+				"nullable": True,
+				"description": "After the callback the access token is in the `<cookie_prefix>X-Access-Token` cookie",
+			},
+		},
+		"required": ["redirect_url", "iam"],
+	},
+)
+data(
 	"ProfileData",
 	OBJ(
 		{
@@ -1126,6 +1173,23 @@ REQ["LogoutRequest"] = _LOGOUT_REQ
 REQ["ForgotPasswordRequest"] = _FORGOT
 REQ["ResetPasswordRequest"] = _RESET
 REQ["InitialPasswordRequest"] = _INITIAL
+REQ["IAMLoginRequest"] = {
+	"type": "object",
+	"properties": {
+		"key": {
+			"type": "string",
+			"maxLength": 64,
+			"description": "Key of an enabled login option, e.g. `agent`. Optional if only one IAM option is enabled.",
+		},
+		"return_url": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 2048,
+			"description": "Absolute http(s) URL IAM sends the browser to after login",
+		},
+	},
+	"required": ["return_url"],
+}
 REQ["ChangePasswordRequest"] = adapt_request_schema("ChangePasswordSchema")
 REQ["UpdateProfileRequest"] = adapt_request_schema("UpdateProfileSchema")
 
@@ -1557,6 +1621,25 @@ ROUTES = [
 		"InitialPasswordRequest",
 		response="MessageData",
 		legacy="oan_auth_service.api.v1.auth.set_initial_password",
+	),
+	R(
+		"get",
+		"/v1/auth/iam/providers",
+		"List login options",
+		"Identity & Access",
+		"public",
+		response="IAMProvidersData",
+		legacy="oan_auth_service.api.v1.auth.get_iam_providers",
+	),
+	R(
+		"post",
+		"/v1/auth/iam/login",
+		"Start a login option",
+		"Identity & Access",
+		"public",
+		"IAMLoginRequest",
+		response="IAMLoginData",
+		legacy="oan_auth_service.api.v1.auth.iam_login",
 	),
 	R(
 		"patch",
@@ -2534,7 +2617,7 @@ ROUTES = [
 		legacy="oan_a2c.api.v1.dashboard.get_chart",
 	),
 ]
-assert len(ROUTES) == 102, f"expected 102 routes, got {len(ROUTES)}"
+assert len(ROUTES) == 105, f"expected 105 routes, got {len(ROUTES)}"
 
 data(
 	"ConsentReasonListData",
