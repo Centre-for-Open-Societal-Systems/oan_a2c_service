@@ -84,8 +84,12 @@ pipeline {
 
             AUTH_BRANCH="develop"
 
-            printf '[{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_auth_service.git","branch":"%s"},{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_a2c_service.git","branch":"%s"}]' \
-              "${AUTH_BRANCH}" "${BRANCH_NAME}" > /tmp/apps.json
+            # OAN Messaging connector (a required app), on the same branch as oan_auth_service.
+            # The job variable OAN_MESSAGING_CONNECTOR_REPO overrides the shared repository.
+            CONNECTOR_REPO="${OAN_MESSAGING_CONNECTOR_REPO:-https://github.com/Centre-for-Open-Societal-Systems/oan_messaging_connector.git}"
+
+            printf '[{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_auth_service.git","branch":"%s"},{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_a2c_service.git","branch":"%s"},{"url":"%s","branch":"%s"}]' \
+              "${AUTH_BRANCH}" "${BRANCH_NAME}" "${CONNECTOR_REPO}" "${AUTH_BRANCH}" > /tmp/apps.json
 
             cd frappe_docker
             DOCKER_BUILDKIT=1 docker buildx build \

@@ -309,6 +309,10 @@ def submit_application(**kwargs):
 	submitted_at = now_datetime()
 	doc.db_set("submitted_at", submitted_at)
 
+	from oan_a2c.oan_messaging.notify import notify_application
+
+	notify_application(doc, "application_submitted")
+
 	return success_response(
 		data={"submitted_at": to_tz_aware_iso(submitted_at)},
 		message="Application submitted successfully",

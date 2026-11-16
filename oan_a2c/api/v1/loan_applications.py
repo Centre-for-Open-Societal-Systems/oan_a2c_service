@@ -1210,6 +1210,13 @@ def update_loan_status(**kwargs):
 	# very roles it targets and leaving no audit record.
 	audit_event.insert(ignore_permissions=True)
 
+	# Farmer SMS (queued in this transaction, sent only after it commits). A status or
+	# stage that did not change sends nothing.
+	if status_changed or stage_changed:
+		from oan_a2c.oan_messaging.notify import notify_status_change
+
+		notify_status_change(doc, target_archetype, resolved["stage_label"], status_changed=status_changed)
+
 	return success_response(message=_("Loan status updated to {0}.").format(resolved["stage_label"]))
 
 
