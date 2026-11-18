@@ -1,0 +1,2270 @@
+{
+  "info": {
+    "_postman_id": "b1e2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "name": "OAN A2C - Administration & Team Management",
+    "description": "End-to-end administration workflows for **Platform Administrators** (`A2C Administrator`, `System Manager`) and **Bank Administrators** (`A2C Bank Admin`).\n\n### Core Capabilities Covered:\n1. **Admin Authentication**: Multi-tier sign-in for Platform Administrators and Bank Administrators, supporting both `jwt_token` and `access_token`.\n2. **Platform User Administration (`/v1/admin/users`)**: Create user accounts, assign roles (`A2C Bank Admin`, `A2C Bank Agent`, `A2C Development Agent`), retrieve user profiles, and issue temporary passwords.\n3. **Bank Onboarding & Governance (`/v1/banks`)**: Register lending organizations, upload KYC licenses, configure compliance contacts (GRO & OPS), upload bank branding, and platform-level approval/suspension status updates.\n4. **Bank Team Management (`/v1/banks/me/team`)**: Invite/provision Bank Agents (Loan Officers) with temporary passwords, list bank staff members, manage roles, re-issue passwords, and inspect assignable loan officers.\n5. **Marketplace Taxonomy Administration (`/v1/admin/taxonomy/*`)**: Configure categories, tags, product attributes, and administrative areas.\n6. **Custom Pipeline Stages (`/v1/banks/me/pipeline-stages`)**: Define and reorder organizational loan evaluation stages.\n7. **Loan Products Cataloging (`/v1/banks/me/products`)**: Create, update, publish, and audit loan products.\n8. **Loan Officer Assignment & Field Operations**: Assign loan officers/agents to leads and loan applications.\n\n### Running in Newman / CI:\n```bash\nnewman run postman/a2c_admin.postman_collection.json -e postman/a2c_localhost.postman_environment.json\n```",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "default"
+    },
+    {
+      "key": "admin_usr",
+      "value": "Administrator",
+      "type": "default"
+    },
+    {
+      "key": "admin_pswd",
+      "value": "admin",
+      "type": "secret"
+    },
+    {
+      "key": "bank_admin_email",
+      "value": "bankadmin@coopbank.com",
+      "type": "default"
+    },
+    {
+      "key": "bank_admin_password",
+      "value": "AdminPass#2026",
+      "type": "secret"
+    },
+    {
+      "key": "bank_admin_name",
+      "value": "Chala Degefa",
+      "type": "default"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "secret"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "secret"
+    },
+    {
+      "key": "refresh_token",
+      "value": "",
+      "type": "secret"
+    },
+    {
+      "key": "bank_code",
+      "value": "CBO001",
+      "type": "default"
+    },
+    {
+      "key": "bank_name",
+      "value": "Cooperative Bank of Oromia",
+      "type": "default"
+    },
+    {
+      "key": "agent_email",
+      "value": "loan.officer@coopbank.com",
+      "type": "default"
+    },
+    {
+      "key": "agent_name",
+      "value": "Haile Gebrselassie",
+      "type": "default"
+    },
+    {
+      "key": "agent_phone",
+      "value": "+251911223344",
+      "type": "default"
+    },
+    {
+      "key": "agent_temp_password",
+      "value": "",
+      "type": "secret"
+    },
+    {
+      "key": "product_id",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "stage_id",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "lead_id",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "loan_application_id",
+      "value": "",
+      "type": "default"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Authentication & Session Setup",
+      "item": [
+        {
+          "name": "1. Platform Admin Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200 OK\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Access token received\", function () {",
+                  "    var res = pm.response.json();",
+                  "    var d = res.data || res.message || res;",
+                  "    pm.expect(d.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.access_token) {",
+                  "        pm.collectionVariables.set(\"jwt_token\", data.access_token);",
+                  "        pm.collectionVariables.set(\"access_token\", data.access_token);",
+                  "    }",
+                  "    if (data && data.refresh_token) pm.collectionVariables.set(\"refresh_token\", data.refresh_token);",
+                  "    if (pm.environment && pm.environment.name && data) {",
+                  "        if (data.access_token) {",
+                  "            pm.environment.set(\"jwt_token\", data.access_token);",
+                  "            pm.environment.set(\"access_token\", data.access_token);",
+                  "        }",
+                  "        if (data.refresh_token) pm.environment.set(\"refresh_token\", data.refresh_token);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticates Platform Administrator credentials (`A2C Administrator` or `System Manager`) and stores `jwt_token`, `access_token`, and `refresh_token` in collection and environment variables.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usr\": \"{{admin_usr}}\",\n  \"pwd\": \"{{admin_pswd}}\",\n  \"remember_me\": false\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Bank Admin Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200 OK\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Bank Admin access token received\", function () {",
+                  "    var res = pm.response.json();",
+                  "    var d = res.data || res.message || res;",
+                  "    pm.expect(d.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.access_token) {",
+                  "        pm.collectionVariables.set(\"jwt_token\", data.access_token);",
+                  "        pm.collectionVariables.set(\"access_token\", data.access_token);",
+                  "    }",
+                  "    if (pm.environment && pm.environment.name && data) {",
+                  "        if (data.access_token) {",
+                  "            pm.environment.set(\"jwt_token\", data.access_token);",
+                  "            pm.environment.set(\"access_token\", data.access_token);",
+                  "        }",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticates Bank Administrator credentials for bank-scoped administrative operations.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usr\": \"{{bank_admin_email}}\",\n  \"pwd\": \"{{bank_admin_password}}\",\n  \"remember_me\": false\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.access_token) {",
+                  "        pm.collectionVariables.set(\"jwt_token\", data.access_token);",
+                  "        pm.collectionVariables.set(\"access_token\", data.access_token);",
+                  "    }",
+                  "    if (data && data.refresh_token) pm.collectionVariables.set(\"refresh_token\", data.refresh_token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/auth/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Exchanges the single-use refresh token for a fresh JWT token pair.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Platform User Administration (/v1/admin/users)",
+      "item": [
+        {
+          "name": "1. List Platform Users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users?role=A2C Bank Admin&page=1&page_size=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "role",
+                  "value": "A2C Bank Admin",
+                  "description": "Filter by A2C role"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "List user accounts holding an A2C service role. Supports search, email, role, and enabled filters."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Onboard User Account (Bank Admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200 or 201\", function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.temporary_password) pm.collectionVariables.set(\"bank_admin_password\", data.temporary_password);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Create a user account in the auth service for a Bank Administrator with role `A2C Bank Admin`. A temporary password is generated and returned once in the response.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"{{bank_admin_name}}\",\n  \"email\": \"{{bank_admin_email}}\",\n  \"phone_number\": \"+251911334455\",\n  \"roles\": [\n    \"A2C Bank Admin\"\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Onboard User Account (Bank Agent / Loan Officer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200 or 201\", function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.temporary_password) pm.collectionVariables.set(\"agent_temp_password\", data.temporary_password);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Create a user account in the auth service for a Bank Agent / Loan Officer with role `A2C Bank Agent`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"{{agent_name}}\",\n  \"email\": \"{{agent_email}}\",\n  \"phone_number\": \"{{agent_phone}}\",\n  \"roles\": [\n    \"A2C Bank Agent\"\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "4. Onboard User Account (Field Development Agent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200 or 201\", function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Create a user account for a platform-wide field Development Agent with role `A2C Development Agent`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Field DA Agent\",\n  \"email\": \"field.da@openagrinet.org\",\n  \"phone_number\": \"+251911778899\",\n  \"roles\": [\n    \"A2C Development Agent\"\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Get User Details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users/{{agent_email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users",
+                "{{agent_email}}"
+              ]
+            },
+            "description": "Account details, contact info, assigned roles, and app profiles of an onboarded user."
+          },
+          "response": []
+        },
+        {
+          "name": "6. Update User Profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users/{{agent_email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users",
+                "{{agent_email}}"
+              ]
+            },
+            "description": "Update user account profile information (first_name, last_name, mobile number).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Haile\",\n  \"last_name\": \"Gebrselassie (Updated)\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "7. Get User Roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users/{{agent_email}}/roles",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users",
+                "{{agent_email}}",
+                "roles"
+              ]
+            },
+            "description": "List the service roles granted to a specific user account."
+          },
+          "response": []
+        },
+        {
+          "name": "8. Issue Temporary Password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.temporary_password) pm.collectionVariables.set(\"agent_temp_password\", data.temporary_password);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/users/{{agent_email}}/temporary-password",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "users",
+                "{{agent_email}}",
+                "temporary-password"
+              ]
+            },
+            "description": "Generate a new temporary password for the user and revoke existing sessions.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"temporary_password\": \"TempPass#2026\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "9. List Assignable Service Roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/roles",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "roles"
+              ]
+            },
+            "description": "List all roles within the A2C service scope that can be granted by an administrator."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Bank Onboarding & Governance (/v1/banks)",
+      "item": [
+        {
+          "name": "1. Register Lending Organization (Bank)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks"
+              ]
+            },
+            "description": "Registers a new lending organization (`A2C Participating Bank`), creates user permission binding, and sets lifecycle status to `'In Review'`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bank_name\": \"{{bank_name}}\",\n  \"bank_code\": \"{{bank_code}}\",\n  \"entity_type\": \"Commercial Bank\",\n  \"registered_street\": \"Bole Sub City, Woreda 03\",\n  \"registered_kebele_village\": \"Kebele 01\",\n  \"registered_woreda_district\": \"Bole\",\n  \"registered_zone\": \"Addis Ababa Zone\",\n  \"registered_region\": \"Addis Ababa\",\n  \"registered_country\": \"Ethiopia\",\n  \"registered_postal_code\": \"1000\",\n  \"registered_email\": \"compliance@coopbank.com\",\n  \"registered_phone\": \"+251911000000\",\n  \"website\": \"https://www.coopbankoromia.com.et\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Get Bank Profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me"
+              ]
+            },
+            "description": "Retrieves caller's organization profile, brand info, address, compliance contacts, and KYC status."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Update Bank Profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me"
+              ]
+            },
+            "description": "Updates organization profile, brand name, website, registered address, and logo URL.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"brand_name\": \"Coopbank AgriFinance\",\n  \"website\": \"https://www.coopbankoromia.com.et\",\n  \"registered_street\": \"Africa Avenue, Mega Building 4th Floor\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "4. Upload Bank Logo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.file_url) pm.collectionVariables.set(\"bank_logo_url\", data.file_url);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/images",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "images"
+              ]
+            },
+            "description": "Uploads a public PNG/JPEG image (max 5MB) for bank branding and returns the storage URL.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filename\": \"coopbank_logo.png\",\n  \"filedata\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Upload Regulatory KYC Document (PDF)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/kyc-documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "kyc-documents"
+              ]
+            },
+            "description": "Uploads private PDF regulatory / banking license compliance document to secure storage.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filename\": \"banking_license.pdf\",\n  \"filedata\": \"JVBERi0xLjQKJcTl8uXrp/Og0MTGCjQgMCBvYmoKPDwgL0xlbmd0aCA1IDAgUiAvRmlsdGVyIC9GbGF0ZURlY29kZSA+PgpzdHJlYW0KeAErVAhUKC4pysxLVwhILClJLVIoLinKzEsHAC9qB44KZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjI0CmVuZG9iagoxIDAgb2JqCjw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PgplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMgWyAzIDAgUiBdIC9Db3VudCAxID4+CmVuZG9iagozIDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFsgMCAwIDYxMiA3OTIgXSAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDEzNCAwMDAwMCBuIAowMDAwMDAwMTgzIDAwMDAwIG4gCjAwMDAwMDAyNDQgMDAwMDAgbiAKMDAwMDAwMDAxOSAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKMzQ1CiUlRU9GCg==\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "6. Download / View KYC Document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/kyc-documents?view=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "kyc-documents"
+              ],
+              "query": [
+                {
+                  "key": "view",
+                  "value": "1",
+                  "description": "Stream document inline for browser preview"
+                }
+              ]
+            },
+            "description": "Streams the bank's stored private KYC compliance document back to the authorized Bank Admin."
+          },
+          "response": []
+        },
+        {
+          "name": "7. Configure Compliance Contacts (GRO & OPS)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/contacts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "contacts"
+              ]
+            },
+            "description": "Configures mandatory Grievance Redressal Officer (GRO) and Operations (OPS) contacts for the bank.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gro_name\": \"Solomon Bogale\",\n  \"gro_mobile\": \"+251911445566\",\n  \"ops_name\": \"Tigist Hailu\",\n  \"ops_mobile\": \"+251911778899\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "8. Governance: Approve Bank (In Review -> Active)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "status"
+              ]
+            },
+            "description": "Marketplace Governance action: Platform Administrator approves a bank under review to `'Active'` status, unlocking loan product publishing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bank_code\": \"{{bank_code}}\",\n  \"new_status\": \"Active\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "9. Governance: Suspend Bank (Active -> Suspended)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "status"
+              ]
+            },
+            "description": "Marketplace Governance action: Platform Administrator places a bank on hold / suspended status.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bank_code\": \"{{bank_code}}\",\n  \"new_status\": \"Suspended\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "10. Get Bank Dashboard Metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/dashboard/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "dashboard",
+                "stats"
+              ]
+            },
+            "description": "Retrieves aggregate performance metrics (active products, leads, loan applications, approvals)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Bank Team Management (/v1/banks/me/team)",
+      "item": [
+        {
+          "name": "1. List Team Members (Bank Agents & Loan Officers)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/team",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "team"
+              ]
+            },
+            "description": "Lists all staff members of the caller's bank with role (`A2C Bank Agent`), active status (`enabled`), and temporary password rotation indicator (`must_change_password`)."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Invite / Onboard Bank Agent (Loan Officer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/team",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "team"
+              ]
+            },
+            "description": "Provisions a new Bank Agent / Loan Officer in the caller's bank with a temporary password. Assigns the `A2C Bank Agent` role, sets `oan_must_change_password=1`, and creates bank `User Permission`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{agent_email}}\",\n  \"full_name\": \"{{agent_name}}\",\n  \"role\": \"A2C Bank Agent\",\n  \"password\": \"TempPassword#2026\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. List Assignable Loan Officers (CRM & Field Ops)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/leads/assignees",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "leads",
+                "assignees"
+              ]
+            },
+            "description": "Returns all available active bank agents who can be assigned to leads or loan applications."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Update Team Member Profile & Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/team/{{agent_email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "team",
+                "{{agent_email}}"
+              ]
+            },
+            "description": "Updates team member full name, role assignment, or enables/disables access.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Haile Gebrselassie (Senior Loan Officer)\",\n  \"role\": \"A2C Bank Agent\",\n  \"enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Reissue Team Member Temporary Password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/team/{{agent_email}}/password-reset",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "team",
+                "{{agent_email}}",
+                "password-reset"
+              ]
+            },
+            "description": "Reissues a temporary password to an agent (forgotten password path). Terminates active sessions and requires password rotation at next sign-in.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"NewTempPass#2026\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "6. Deactivate Team Member",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/team/{{agent_email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "team",
+                "{{agent_email}}"
+              ]
+            },
+            "description": "Disables bank agent account (`enabled: false`), preventing login and session access.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Marketplace Taxonomy Administration",
+      "item": [
+        {
+          "name": "1. List Marketplace Categories",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/taxonomy/categories",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "taxonomy",
+                "categories"
+              ]
+            },
+            "description": "List product categories configured across the agricultural credit marketplace."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Create Marketplace Category",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/taxonomy/categories",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "taxonomy",
+                "categories"
+              ]
+            },
+            "description": "Platform Admin action: register a new category for loan cataloging (e.g. Input Loans, Equipment, Livestock).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Agricultural Input Loan\",\n  \"code\": \"AGRI-INPUT-01\",\n  \"description\": \"Short-term seasonal financing for certified seeds, fertilizers, and agrochemicals\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. List Marketplace Tags",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/taxonomy/tags",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "taxonomy",
+                "tags"
+              ]
+            },
+            "description": "List discoverability tags defined for product classification."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Create Marketplace Tag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/taxonomy/tags",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "taxonomy",
+                "tags"
+              ]
+            },
+            "description": "Platform Admin action: register a searchable keyword tag (e.g. Seasonal, Low Interest, Smallholder).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Smallholder Friendly\",\n  \"description\": \"Products tailored specifically for smallholder farming households\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. List Product Attributes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/taxonomy/attributes",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "taxonomy",
+                "attributes"
+              ]
+            },
+            "description": "List dynamic product attribute definitions (e.g. Collateral Type, Repayment Frequency)."
+          },
+          "response": []
+        },
+        {
+          "name": "6. Create Attribute Term",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/admin/taxonomy/attribute-terms",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "admin",
+                "taxonomy",
+                "attribute-terms"
+              ]
+            },
+            "description": "Platform Admin action: add an allowed discrete value term under an attribute definition.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attribute_name\": \"Collateral Requirement\",\n  \"term_name\": \"Psychometric / Credit Scoring\",\n  \"code\": \"PSYCHO-SCORE\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "7. List Administrative Areas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/administrative-areas",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "administrative-areas"
+              ]
+            },
+            "description": "List geographic administrative areas (Regions, Zones, Woredas) available for loan eligibility scoping."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Custom Pipeline Stages (/v1/banks/me/pipeline-stages)",
+      "item": [
+        {
+          "name": "1. List Custom Pipeline Stages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/pipeline-stages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "pipeline-stages"
+              ]
+            },
+            "description": "Retrieves the custom loan underwriting pipeline stages configured for the caller's bank."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Add Pipeline Stage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.stage_id) pm.collectionVariables.set(\"stage_id\", data.stage_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/pipeline-stages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "pipeline-stages"
+              ]
+            },
+            "description": "Adds an individual pipeline stage mapped to an archetype state (`In Transition`, `Terminal`).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Farm Inspection & Verification\",\n  \"archetype_state\": \"In Transition\",\n  \"sequence\": 2,\n  \"description\": \"Field visit by loan officer to verify plot boundaries and crop health\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Sync & Reorder Pipeline Stages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/pipeline-stages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "pipeline-stages"
+              ]
+            },
+            "description": "Bulk synchronizes and reorders the bank's complete underwriting workflow stages.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stages\": [\n    {\n      \"label\": \"Document Review\",\n      \"archetype_state\": \"In Transition\",\n      \"sequence\": 1\n    },\n    {\n      \"label\": \"Field Inspection\",\n      \"archetype_state\": \"In Transition\",\n      \"sequence\": 2\n    },\n    {\n      \"label\": \"Credit Committee Approval\",\n      \"archetype_state\": \"In Transition\",\n      \"sequence\": 3\n    },\n    {\n      \"label\": \"Disbursement Ready\",\n      \"archetype_state\": \"Terminal\",\n      \"sequence\": 4\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Loan Products Cataloging (/v1/banks/me/products)",
+      "item": [
+        {
+          "name": "1. List Bank Loan Products",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.products && data.products.length > 0) pm.collectionVariables.set(\"product_id\", data.products[0].id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products"
+              ]
+            },
+            "description": "List loan products cataloged by the bank, with filtering by status (`Draft`, `Published`, `Archived`)."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Create Loan Product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});",
+                  "",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "    var res = pm.response.json();",
+                  "    var envelope = res.message || res;",
+                  "    var data = envelope.data || envelope;",
+                  "    if (data && data.id) pm.collectionVariables.set(\"product_id\", data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products"
+              ]
+            },
+            "description": "Defines a new agricultural loan product with loan amount thresholds, tenure, interest rate, and requirements.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_name\": \"Smallholder Fertilizer Financing 2026\",\n  \"product_type\": \"Crop Loan\",\n  \"description\": \"Financing for inorganic fertilizers (Urea & NPSB) for the Meher crop season.\",\n  \"min_amount\": 5000,\n  \"max_amount\": 50000,\n  \"currency\": \"ETB\",\n  \"min_tenure_months\": 3,\n  \"max_tenure_months\": 12,\n  \"interest_rate\": 14.5,\n  \"processing_fee_percentage\": 1.0\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Get Loan Product Details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products/{{product_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products",
+                "{{product_id}}"
+              ]
+            },
+            "description": "Inspect loan product attributes, categories, eligible regions, and fee schedules."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Update Loan Product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products/{{product_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products",
+                "{{product_id}}"
+              ]
+            },
+            "description": "Update product terms: maximum borrowing limits, interest rate, or tenure options.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_amount\": 60000,\n  \"interest_rate\": 13.9\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Publish Loan Product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products/{{product_id}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products",
+                "{{product_id}}",
+                "status"
+              ]
+            },
+            "description": "Transitions product lifecycle status from `'Draft'` to `'Published'`, making it visible to farmers and agents.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"Published\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "6. Get Product Audit Log",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/banks/me/products/{{product_id}}/audit-log",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "banks",
+                "me",
+                "products",
+                "{{product_id}}",
+                "audit-log"
+              ]
+            },
+            "description": "Retrieves the chronological status transition history and audit timestamps for the product."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Officer Assignment & Field Operations",
+      "item": [
+        {
+          "name": "1. Assign Loan Officer / Agent to Lead",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/leads/{{lead_id}}/assignment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "leads",
+                "{{lead_id}}",
+                "assignment"
+              ]
+            },
+            "description": "Assigns a specific bank agent / loan officer to follow up on a referred borrower lead.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent\": \"{{agent_email}}\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Assign Loan Officer to Loan Application",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 2xx\", function () {",
+                  "    pm.response.to.be.success;",
+                  "});",
+                  "pm.test(\"Response contains success status\", function () {",
+                  "    var res = pm.response.json();",
+                  "    pm.expect(res.status).to.eql('success');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/loan-applications/{{loan_application_id}}/officer",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "loan-applications",
+                "{{loan_application_id}}",
+                "officer"
+              ]
+            },
+            "description": "Assigns or reassigns the dedicated underwriting loan officer responsible for reviewing a submitted loan application.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"officer\": \"{{agent_email}}\"\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
