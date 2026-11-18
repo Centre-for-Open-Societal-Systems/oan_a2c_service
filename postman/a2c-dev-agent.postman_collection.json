@@ -334,7 +334,7 @@
                   "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
                   "var d = pm.response.json().data || {};",
                   "pm.test('Has A2C Development Agent role', function () { pm.expect(JSON.stringify(d)).to.include('A2C Development Agent'); });",
-                  "pm.environment.set('agent_user', d.user || '');"
+                  "pm.collectionVariables.set('agent_user', d.user || '');"
                 ]
               }
             }
@@ -385,7 +385,6 @@
                   "var data = env.data || {};",
                   "if (data.lead_id) {",
                   "    pm.collectionVariables.set('lead_id', data.lead_id);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"lead_id\", data.lead_id); }",
                   "    console.log('Captured lead_id:', data.lead_id);",
                   "}"
                 ],
@@ -864,7 +863,7 @@
                   "var list = d.products || [];",
                   "var p = list.find(function (x) { return x.category && Number(x.min_amount) <= amt && (!x.max_amount || amt <= Number(x.max_amount)); }) || list.find(function (x) { return x.category; }) || list[0] || {};",
                   "pm.test('Catalog has a product with a category', function () { pm.expect(p.category).to.be.ok; });",
-                  "if (p.name) { pm.collectionVariables.set('loan_product', p.name); pm.environment.set('loan_product', p.name); }",
+                  "if (p.name) { pm.collectionVariables.set('loan_product', p.name); }",
                   "var use = amt; if (p.min_amount) { use = Math.max(use, Number(p.min_amount)); } if (p.max_amount) { use = Math.min(use, Number(p.max_amount)); }",
                   "pm.collectionVariables.set('credit_loan_amount', String(use));",
                   "pm.collectionVariables.set('credit_loan_type', pm.environment.get('credit_loan_type') || 'Crop Loan');"
@@ -1051,7 +1050,6 @@
                   "var data = responseJson.message && responseJson.message.data ? responseJson.message.data : (responseJson.data || {});",
                   "if (data.schedule_id) {",
                   "    pm.collectionVariables.set('schedule_id', data.schedule_id);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"schedule_id\", data.schedule_id); }",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1232,14 +1230,11 @@
                   "if (env.status === 'success') {",
                   "    if (data.farmer_db_id !== undefined && data.farmer_db_id !== null) {",
                   "        pm.collectionVariables.set('farmer_id', data.farmer_db_id.toString());",
-                  "        if (pm.environment && pm.environment.name) { pm.environment.set(\"farmer_id\", data.farmer_db_id.toString()); }",
                   "    } else if (data.farmer && data.farmer.id) {",
                   "        pm.collectionVariables.set('farmer_id', data.farmer.id.toString());",
-                  "        if (pm.environment && pm.environment.name) { pm.environment.set(\"farmer_id\", data.farmer.id.toString()); }",
                   "    }",
                   "    if (data.farmer && data.farmer.name) {",
                   "        pm.collectionVariables.set('farmer_name', data.farmer.name);",
-                  "        if (pm.environment && pm.environment.name) { pm.environment.set(\"farmer_name\", data.farmer.name); }",
                   "    }",
                   "    console.log('Farmer found:', (data.farmer || {}).name, '(db id', data.farmer_db_id + ')');",
                   "} else {",
@@ -1294,12 +1289,12 @@
                   "pm.test('consent_request created', function () { pm.expect(data.consent_request).to.not.be.empty; });",
                   "",
                   "if (env.status === 'success') {",
+                  "    pm.collectionVariables.set('otp_requested_at', Date.now());",
+                  "    pm.collectionVariables.unset('otp_seen_keys');",
+                  "    pm.collectionVariables.unset('otp_poll_tries');",
                   "    if (data.consent_request) { pm.collectionVariables.set('consent_request', data.consent_request); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"consent_request\", data.consent_request); }",
                   "    if (data.transaction_id) { pm.collectionVariables.set('transaction_id', data.transaction_id.toString()); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"transaction_id\", data.transaction_id.toString()); }",
                   "    if (data.masked_phone) { pm.collectionVariables.set('masked_phone', data.masked_phone); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"masked_phone\", data.masked_phone); }",
                   "    console.log('OTP sent to', data.masked_phone, '| txn:', data.transaction_id, '| consent request:', data.consent_request);",
                   "} else {",
                   "    console.log('Request OTP failed:', env.message);",
@@ -1311,11 +1306,43 @@
           ]
         },
         {
-          "name": "5a. Find Latest OTP (S3 inbox)",
+          "name": "5a. Sign in to OTP inbox (MinIO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The console sets its session cookie here; 5b/5c reuse it from the cookie jar.",
+                  "pm.test('Signed in to MinIO', function () { pm.expect(pm.response.code).to.be.oneOf([200, 204]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accessKey\": \"{{minio_otp_user}}\",\n  \"secretKey\": \"{{minio_otp_password}}\"\n}"
+            },
+            "url": "{{minio_console_url}}/api/v1/login",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "5b. Find OTP file (MinIO)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{otp_inbox_list_url}}/?list-type=2&prefix=otp/&max-keys=1000",
+            "url": "{{minio_console_url}}/api/v1/buckets/a2c-webhook/objects?prefix={{otp_prefix_b64}}&limit=1000",
             "auth": {
               "type": "noauth"
             }
@@ -1326,7 +1353,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var end = Date.now() + 4000; while (Date.now() < end) {}"
+                  "// Give the OTP webhook a moment to drop the file, then list otp/ (the console API",
+                  "// takes the prefix base64-encoded).",
+                  "var end = Date.now() + 3000; while (Date.now() < end) {}",
+                  "pm.collectionVariables.set('otp_prefix_b64', encodeURIComponent(CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse('otp/'))));"
                 ]
               }
             },
@@ -1335,24 +1365,40 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Pick the newest OTP file written since Request OTP that we have not already",
+                  "// rejected; 5c checks it belongs to our transaction.",
                   "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
-                  "var xml = pm.response.text();",
-                  "var keys = []; var re = /<Key>([^<]+)<\\/Key>/g; var m;",
-                  "while ((m = re.exec(xml)) !== null) { keys.push(m[1]); }",
-                  "keys = keys.filter(function (k) { return k.indexOf('otp/') === 0 && k.slice(-5) === '.json'; }).sort();",
-                  "pm.test('OTP file found', function () { pm.expect(keys.length).to.be.above(0); });",
-                  "if (keys.length) { pm.environment.set('latest_otp_key', keys[keys.length - 1]); }"
+                  "var since = Number(pm.collectionVariables.get('otp_requested_at') || 0) - 60000;",
+                  "var seen = JSON.parse(pm.collectionVariables.get('otp_seen_keys') || '[]');",
+                  "var tries = Number(pm.collectionVariables.get('otp_poll_tries') || 0) + 1;",
+                  "pm.collectionVariables.set('otp_poll_tries', tries);",
+                  "",
+                  "var objects = (pm.response.json().objects || []).filter(function (o) {",
+                  "    return /^otp\\/.+\\.json$/.test(o.name) && seen.indexOf(o.name) === -1 && Date.parse(o.last_modified) >= since;",
+                  "}).sort(function (a, b) { return Date.parse(a.last_modified) - Date.parse(b.last_modified); });",
+                  "",
+                  "if (objects.length) {",
+                  "    var key = objects[objects.length - 1].name;",
+                  "    pm.collectionVariables.set('latest_otp_key', key);",
+                  "    pm.collectionVariables.set('latest_otp_key_b64', encodeURIComponent(CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(key))));",
+                  "} else if (tries < 10) {",
+                  "    console.log('No new OTP file yet (try ' + tries + '/10), polling again');",
+                  "    pm.execution.setNextRequest('5b. Find OTP file (MinIO)');",
+                  "} else {",
+                  "    pm.test('New OTP file found for this request', function () { pm.expect.fail('no OTP file newer than Request OTP after 10 tries'); });",
+                  "    pm.execution.setNextRequest(null);",
+                  "}"
                 ]
               }
             }
           ]
         },
         {
-          "name": "5b. Read Latest OTP (S3 inbox)",
+          "name": "5c. Read OTP (MinIO)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{otp_inbox_url}}/{{latest_otp_key}}",
+            "url": "{{minio_console_url}}/api/v1/buckets/a2c-webhook/objects/download?prefix={{latest_otp_key_b64}}",
             "auth": {
               "type": "noauth"
             }
@@ -1363,12 +1409,26 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Use the OTP only if the file belongs to this consent request (requestId is the",
+                  "// Request OTP transaction_id); otherwise skip it and go back to polling.",
                   "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
                   "var b = {}; try { b = pm.response.json(); } catch (e) {}",
-                  "var otp = b.otp || b.otp_code || (b.request && b.request.otp);",
-                  "var tx = b.transaction_id || b.transactionID || b.transactionId;",
-                  "pm.test('OTP present', function () { pm.expect(otp).to.be.ok; });",
-                  "if (otp) { pm.environment.set('otp_code', String(otp)); }"
+                  "var norm = function (v) { return String(v || '').replace(/-/g, '').toUpperCase(); };",
+                  "var ourTx = norm(pm.collectionVariables.get('transaction_id'));",
+                  "var matches = ourTx && (norm(b.requestId) === ourTx || norm(b.transactionID) === ourTx);",
+                  "",
+                  "if (matches && b.otp) {",
+                  "    pm.test('OTP belongs to this consent request', function () { pm.expect(b.otp).to.be.ok; });",
+                  "    pm.collectionVariables.set('otp_code', String(b.otp));",
+                  "    pm.collectionVariables.unset('otp_seen_keys');",
+                  "    pm.collectionVariables.unset('otp_poll_tries');",
+                  "} else {",
+                  "    var seen = JSON.parse(pm.collectionVariables.get('otp_seen_keys') || '[]');",
+                  "    seen.push(pm.collectionVariables.get('latest_otp_key'));",
+                  "    pm.collectionVariables.set('otp_seen_keys', JSON.stringify(seen));",
+                  "    console.log('OTP file', pm.collectionVariables.get('latest_otp_key'), 'is for', b.requestId, 'not', pm.collectionVariables.get('transaction_id'), '- polling again');",
+                  "    pm.execution.setNextRequest('5b. Find OTP file (MinIO)');",
+                  "}"
                 ]
               }
             }
@@ -1417,62 +1477,13 @@
                   "",
                   "if (env.status === 'success') {",
                   "    if (data.consent_request) { pm.collectionVariables.set('consent_request', data.consent_request); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"consent_request\", data.consent_request); }",
                   "    if (data.transaction_id) { pm.collectionVariables.set('transaction_id', data.transaction_id.toString()); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"transaction_id\", data.transaction_id.toString()); }",
                   "    console.log('OTP verified for consent request:', data.consent_request);",
                   "} else {",
                   "    console.log('Verify OTP failed:', env.message);",
                   "}"
                 ],
                 "type": "text/javascript"
-              }
-            },
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Auto-fetch the latest OTP dropped into the webhook sink by the OTP webhook so",
-                  "// you don't have to copy it by hand. Set `webhook_base_url` in your environment",
-                  "// to the sink's S3-compatible REST endpoint; leave it blank to enter OTPs manually.",
-                  "//",
-                  "// Flow: list the otp/ prefix -> pick the newest object (filenames are timestamp-",
-                  "// prefixed, so the lexicographically-greatest key is the latest) -> GET it ->",
-                  "// set otp_code. Postman waits for these async calls before sending Verify OTP.",
-                  "var base = pm.variables.get(\"webhook_base_url\");",
-                  "if (!base) {",
-                  "    console.warn(\"webhook_base_url is not set; skipping OTP auto-fetch. Enter the OTP manually.\");",
-                  "} else {",
-                  "    const listUrl = base.replace(/\\/+$/, \"\") + \"/?list-type=2&prefix=otp/\";",
-                  "    pm.sendRequest({ url: listUrl, method: \"GET\" }, function (err, res) {",
-                  "        if (err || !res) { console.error(\"OTP list request failed:\", err); return; }",
-                  "        let parsed;",
-                  "        try { parsed = xml2Json(res.text()); } catch (e) { console.error(\"Could not parse S3 listing XML:\", e); return; }",
-                  "        let contents = parsed && parsed.ListBucketResult && parsed.ListBucketResult.Contents;",
-                  "        if (!contents) { console.warn(\"No objects under otp/ prefix.\"); return; }",
-                  "        if (!Array.isArray(contents)) contents = [contents];",
-                  "        const keys = contents.map(function (o) { return o.Key; })",
-                  "                             .filter(function (k) { return k && k.endsWith(\".json\"); });",
-                  "        if (!keys.length) { console.warn(\"No .json OTP files found.\"); return; }",
-                  "        keys.sort(); // timestamp-prefixed names -> last is newest",
-                  "        const latestKey = keys[keys.length - 1];",
-                  "        const objUrl = base.replace(/\\/+$/, \"\") + \"/\" + latestKey;",
-                  "        pm.sendRequest({ url: objUrl, method: \"GET\" }, function (err2, res2) {",
-                  "            if (err2 || !res2) { console.error(\"Fetching latest OTP object failed:\", err2); return; }",
-                  "            let data;",
-                  "            try { data = res2.json(); } catch (e) { console.error(\"OTP object is not valid JSON:\", res2.text()); return; }",
-                  "            if (data.otp) {",
-                  "                pm.collectionVariables.set(\"otp_code\", String(data.otp));",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"otp_code\", String(data.otp)); }",
-                  "                console.log(\"otp_code set to\", data.otp, \"from\", latestKey);",
-                  "            } else {",
-                  "                console.warn(\"Latest OTP object had no 'otp' field:\", data);",
-                  "            }",
-                  "        });",
-                  "    });",
-                  "}"
-                ]
               }
             }
           ]
@@ -1512,7 +1523,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+                  "// Resend right after Verify is expected to be refused (OpenG2P allows one resend",
+                  "// a minute, and a verified request is no longer pending); either way it must not 5xx.",
+                  "pm.test('Resend answered without a server error', function () {",
+                  "    pm.expect(pm.response.code).to.be.below(500);",
+                  "});",
+                  "if (pm.response.code !== 200) {",
+                  "    var r = pm.response.json(); var e = (r && typeof r.message === 'object' && r.message) || r;",
+                  "    console.log('Resend OTP refused:', e.message);",
+                  "}"
                 ]
               }
             }
@@ -1563,9 +1582,7 @@
                   "",
                   "if (env.status === 'success') {",
                   "    if (data.openg2p_consent_id) { pm.collectionVariables.set('openg2p_consent_id', data.openg2p_consent_id.toString()); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"openg2p_consent_id\", data.openg2p_consent_id.toString()); }",
                   "    if (data.consent_receipt) { pm.collectionVariables.set('consent_receipt', data.consent_receipt); }",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"consent_receipt\", data.consent_receipt); }",
                   "    var preview = data.farmer_preview || {};",
                   "    console.log('Consent approved. openg2p_consent_id:', data.openg2p_consent_id);",
                   "    console.log('Farmer:', preview.given_name, preview.family_name, '| phone:', (preview.phone_no || []).join(', '));",
@@ -1583,6 +1600,53 @@
     {
       "name": "3. Loan Application",
       "item": [
+        {
+          "name": "0a. Complete visit (required before a lead can be Verified)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var r = pm.response.json(); var env = (r && typeof r.message === 'object' && r.message) || r;",
+                  "pm.test('visit marked Completed', function () { pm.expect(env.status).to.eql('success'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"Completed\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/visit-schedules/:id/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "visit-schedules",
+                ":id",
+                "status"
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "{{schedule_id}}"
+                }
+              ]
+            }
+          }
+        },
         {
           "name": "0. Mark lead Verified (required before a loan application)",
           "request": {
@@ -1714,7 +1778,7 @@
                   "    var d = body.data || {};",
                   "    var id = d.application_id || d.loan_application || d.name || d.id;",
                   "    pm.test('Application id returned', function () { pm.expect(id).to.be.ok; });",
-                  "    if (id) { pm.collectionVariables.set('loan_application', String(id)); pm.environment.set('loan_application', String(id)); }",
+                  "    if (id) { pm.collectionVariables.set('loan_application', String(id)); }",
                   "}"
                 ]
               }
@@ -2033,13 +2097,11 @@
                   "    const fileAttachment = responseJson.data[0].file_attachment;",
                   "    if (fileAttachment) {",
                   "        pm.collectionVariables.set('file_id', fileAttachment);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"file_id\", fileAttachment); }",
                   "    }",
                   "} else if (responseJson.message && responseJson.message.status === 'success' && responseJson.message.data && responseJson.message.data.length > 0) {",
                   "    const fileAttachment = responseJson.message.data[0].file_attachment;",
                   "    if (fileAttachment) {",
                   "        pm.collectionVariables.set('file_id', fileAttachment);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"file_id\", fileAttachment); }",
                   "    }",
                   "}"
                 ],
@@ -2103,10 +2165,8 @@
                   "",
                   "if (responseJson.status === 'success' && responseJson.results && responseJson.results.length > 0) {",
                   "    pm.collectionVariables.set('loan_application', responseJson.results[0].application_id);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"loan_application\", responseJson.results[0].application_id); }",
                   "} else if (responseJson.message && responseJson.message.status === 'success' && responseJson.message.results && responseJson.message.results.length > 0) {",
                   "    pm.collectionVariables.set('loan_application', responseJson.message.results[0].application_id);",
-                  "if (pm.environment && pm.environment.name) { pm.environment.set(\"loan_application\", responseJson.message.results[0].application_id); }",
                   "}"
                 ],
                 "type": "text/javascript"
