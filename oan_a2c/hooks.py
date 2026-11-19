@@ -294,6 +294,10 @@ before_request = ["oan_a2c.api.router.ensure_routes_registered"]
 on_user_profile = ["oan_a2c.api.auth.on_user_profile"]
 on_access_token_claims = ["oan_a2c.api.auth.access_token_claims"]
 
+# Scopes oan_auth_service's /v1/admin/* endpoints (users, roles, permissions) to the roles and
+# doctypes named "A2C" or "A2C <...>". Without it those endpoints answer 400.
+oan_service_prefix = "A2C"
+
 # Automatically update python controller files with type annotations for this app.
 # export_python_type_annotations = True
 
