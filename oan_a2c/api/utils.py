@@ -13,6 +13,38 @@ from oan_a2c.a2c_marketplace.permissions import (  # pyright: ignore[reportMissi
 	BankNotOnboarded,
 )
 
+_INCR_WITH_WINDOW = """
+local count = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+
+def _incr_counter(key: str, window: int) -> int:
+	"""Count one rate-limit hit without `EXPIRE ... NX`, which Redis 6 rejects."""
+	return int(frappe.cache.eval(_INCR_WITH_WINDOW, 1, frappe.cache.make_key(key), window))
+
+
+def _patch_auth_service_rate_limit() -> None:
+	"""Make oan_auth_service's rate limiter work on Redis 6.
+
+	Builds of oan_auth_service before 2fdac36 count hits with `EXPIRE ... NX`, a Redis 7.0
+	flag, so every rate-limited endpoint answers 500 on an older server. The fixed library
+	defines `_INCR_WITH_WINDOW`; when it is present this does nothing. Drop it once every
+	deployed image carries that fix.
+	"""
+	try:
+		from oan_auth_service.api import utils as auth_utils  # pyright: ignore[reportMissingImports]
+	except ImportError:
+		return
+	if not hasattr(auth_utils, "_INCR_WITH_WINDOW"):
+		auth_utils.incr_counter = _incr_counter
+
+
+_patch_auth_service_rate_limit()
+
 
 class _DummyException(Exception):
 	pass
