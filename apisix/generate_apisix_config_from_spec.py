@@ -392,9 +392,28 @@ def consumers() -> list[dict]:
 	]
 
 
+def auth_admin_routes(routes):
+	"""oan_auth_service's `/v1/admin/*` routes (users, roles, permissions).
+
+	This app mirrors the rest of oan_auth_service's endpoints in its own spec, so
+	`gw.with_auth_routes` would refuse the duplicates. The admin routes are not
+	mirrored, so only they are taken from oan_auth_service's spec.
+	"""
+	auth = gw.reconcile(gw.spec_routes(gw.load_spec(gw.AUTH_SPEC_PATH)), gw.AUTH_TIER_OVERRIDES)
+	admin = [r for r in auth if r["path"].startswith("/v1/admin/")]
+	clash = {(r["method"], r["path"]) for r in routes} & {(r["method"], r["path"]) for r in admin}
+	if clash:
+		raise gw.GatewayConfigError(
+			"Declared by both this app and oan_auth_service:\n"
+			+ "\n".join(f"  {m} {p}" for m, p in sorted(clash))
+		)
+	return admin
+
+
 def main():
 	spec = gw.load_spec(SPEC_PATH)
 	routes = gw.reconcile(spec_routes(spec), TIER_OVERRIDES)
+	routes += auth_admin_routes(routes)
 	doc = gw.build_document(
 		routes,
 		app=APP,
