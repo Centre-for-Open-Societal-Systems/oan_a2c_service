@@ -105,7 +105,10 @@ def validate_request(schema: type[BaseModel]):
 				errors = {}
 				for err in e.errors():
 					loc = ".".join(str(loc_item) for loc_item in err["loc"])
-					errors[loc] = err["msg"]
+					msg = err["msg"]
+					if msg.startswith("Value error, "):
+						msg = msg[len("Value error, ") :]
+					errors[loc] = msg
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
@@ -439,7 +442,10 @@ def validate_phone_string(v):
 	except frappe.ValidationError as e:
 		if frappe.local.message_log:
 			frappe.local.message_log.pop()
-		raise ValueError(str(e)) from None
+		msg = str(e)
+		if ": " in msg and any(ch.isdigit() for ch in msg.split(": ")[-1]):
+			msg = msg.rsplit(": ", 1)[0]
+		raise ValueError(msg) from None
 
 
 def validate_required_phone_string(v):
@@ -668,7 +674,10 @@ def handle_api_errors(func):
 			errors = {}
 			for err in e.errors():
 				loc = ".".join(str(loc_item) for loc_item in err["loc"])
-				errors[loc] = err["msg"]
+				msg = err["msg"]
+				if msg.startswith("Value error, "):
+					msg = msg[len("Value error, ") :]
+				errors[loc] = msg
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400
 			return error_response(message="Validation failed", code="VALIDATION_ERROR", details=errors)
