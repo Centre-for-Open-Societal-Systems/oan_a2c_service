@@ -241,7 +241,16 @@ def request_otp(**kwargs):
 
 		# Resolve the farmer's registry record first, so an unknown Fayda ID fails
 		# before a consent request is opened or an OTP is sent.
-		farmer = client.lookup_beneficiary(fayda_id)
+		#
+		# Not for a farmer acting for themselves: the lookup calls the registry's staff
+		# search with the caller's own token, which a farmer's sign-in does not carry the
+		# staff roles for (it answers 403). The Consent Manager and the beneficiary360 fetch
+		# at submit_consent both key on the Fayda ID, so a wrong one is refused there, and
+		# the ID itself stands in for the registry record id.
+		if not lead_id and FARMER_ROLE in frappe.get_roles():
+			farmer = {"internal_record_id": fayda_id}
+		else:
+			farmer = client.lookup_beneficiary(fayda_id)
 
 		# Open the pending consent request.
 		#
