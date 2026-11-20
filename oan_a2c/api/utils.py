@@ -46,6 +46,51 @@ def _patch_auth_service_rate_limit() -> None:
 _patch_auth_service_rate_limit()
 
 
+def _patch_auth_service_idempotency() -> None:
+	"""Make oan_auth_service's @idempotent work outside an HTTP request.
+
+	In oan_auth_service, idempotent() accesses frappe.request directly, which raises
+	RuntimeError: object is not bound when called outside a web request (tests, console, workers).
+	Drop once oan_auth_service safely reads getattr(frappe.local, 'request', None).
+	"""
+	try:
+		from oan_auth_service.api import (
+			idempotency as auth_idempotency,  # pyright: ignore[reportMissingImports]
+		)
+	except ImportError:
+		return
+
+	orig_idempotent = auth_idempotency.idempotent
+
+	def safe_idempotent(fn=None, *, required=False):
+		dec = orig_idempotent(required=required)
+
+		def decorator(target_fn):
+			orig_wrapper = dec(target_fn)
+
+			@wraps(target_fn)
+			def wrapper(*args, **kwargs):
+				if not getattr(frappe.local, "request", None):
+					return target_fn(*args, **kwargs)
+				return orig_wrapper(*args, **kwargs)
+
+			return wrapper
+
+		return decorator(fn) if fn else decorator
+
+	auth_idempotency.idempotent = safe_idempotent
+
+
+_patch_auth_service_idempotency()
+
+try:
+	from oan_auth_service.api.idempotency import idempotent  # pyright: ignore[reportMissingImports]
+except ImportError:
+
+	def idempotent(fn=None, *, required=False):
+		return fn if fn else lambda f: f
+
+
 class _DummyException(Exception):
 	pass
 
@@ -105,7 +150,10 @@ def validate_request(schema: type[BaseModel]):
 				errors = {}
 				for err in e.errors():
 					loc = ".".join(str(loc_item) for loc_item in err["loc"])
-					errors[loc] = err["msg"]
+					msg = err["msg"]
+					if msg.startswith("Value error, "):
+						msg = msg[len("Value error, ") :]
+					errors[loc] = msg
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
@@ -439,7 +487,10 @@ def validate_phone_string(v):
 	except frappe.ValidationError as e:
 		if frappe.local.message_log:
 			frappe.local.message_log.pop()
-		raise ValueError(str(e)) from None
+		msg = str(e)
+		if ": " in msg and any(ch.isdigit() for ch in msg.split(": ")[-1]):
+			msg = msg.rsplit(": ", 1)[0]
+		raise ValueError(msg) from None
 
 
 def validate_required_phone_string(v):
@@ -668,7 +719,10 @@ def handle_api_errors(func):
 			errors = {}
 			for err in e.errors():
 				loc = ".".join(str(loc_item) for loc_item in err["loc"])
-				errors[loc] = err["msg"]
+				msg = err["msg"]
+				if msg.startswith("Value error, "):
+					msg = msg[len("Value error, ") :]
+				errors[loc] = msg
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400
 			return error_response(message="Validation failed", code="VALIDATION_ERROR", details=errors)

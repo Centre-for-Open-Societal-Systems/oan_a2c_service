@@ -3,7 +3,6 @@ import json
 import frappe
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
-from oan_auth_service.api.idempotency import idempotent
 from pydantic import BaseModel, Field
 
 from oan_a2c.a2c_marketplace.roles import DEVELOPMENT_AGENT_ROLE, FARMER_ROLE
@@ -15,6 +14,7 @@ from oan_a2c.a2c_marketplace.stages import (
 from oan_a2c.api.utils import (
 	apply_status_transition,
 	handle_api_errors,
+	idempotent,
 	require_role,
 	success_response,
 	to_tz_aware_iso,
