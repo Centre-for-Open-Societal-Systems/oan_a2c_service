@@ -13,6 +13,7 @@ from oan_a2c.a2c_marketplace.permissions import get_user_bank, is_platform_admin
 from oan_a2c.a2c_marketplace.roles import BANK_ROLES
 from oan_a2c.api.utils import (
 	handle_api_errors,
+	match_allowed_tokens,
 	parse_multi_value,
 	success_response,
 	to_tz_aware_iso,
@@ -87,6 +88,16 @@ class PaginationSchema(BaseModel):
 	start: int = Field(0, ge=0)
 
 
+def _known_category_ids() -> list[str]:
+	"""Every category id.
+
+	Only consulted when a raw `category` string is not itself a category id and
+	has to be split on commas, which is the legacy case — ids minted by
+	`clean_slug` no longer contain commas.
+	"""
+	return frappe.get_all("A2C Term Category", pluck="name")
+
+
 def _products_in_category(category: str | list[str]) -> list[str]:
 	"""Loan product ids carrying any of `category`.
 
@@ -100,7 +111,25 @@ def _products_in_category(category: str | list[str]) -> list[str]:
 	permission-filtered — a product the farmer may not see cannot be pulled into
 	the result by naming it here.
 	"""
-	categories = parse_multi_value(category)
+	if not category:
+		return []
+
+	if isinstance(category, (list, tuple, set)):
+		categories = [str(c).strip() for c in category if str(c).strip()]
+	else:
+		c_str = str(category).strip()
+		if not c_str:
+			return []
+		if c_str.startswith("[") and c_str.endswith("]"):
+			categories = parse_multi_value(c_str)
+		elif frappe.db.exists("A2C Term Category", c_str):
+			# whole string is one id — never split it, it may contain legacy commas
+			categories = [c_str]
+		else:
+			# lenient: an unknown category should match nothing, not raise
+			categories = match_allowed_tokens(c_str, _known_category_ids(), strict=False)
+
+	categories = list(dict.fromkeys(categories))
 	if not categories:
 		return []
 	# ids only ever narrow the permission-filtered product query below
@@ -261,16 +290,15 @@ def _enrich_products_with_application_counts(products: list[dict]) -> None:
 	app_counts = frappe.get_list(
 		"A2C Loan Application",
 		filters={"loan_product": ["in", product_names]},
-		fields=["loan_product", {"COUNT": "*"}],
+		fields=["loan_product", {"COUNT": "*", "as": "count"}],
 		group_by="loan_product",
 	)
-	counts_map = {row.loan_product: row.get("COUNT(*)") for row in app_counts}
+	counts_map = {row.loan_product: row.get("count") for row in app_counts}
 
 	for p in products:
 		p["applications_count"] = counts_map.get(p.get("name"), 0)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(FarmerCatalogSchema)
 @handle_api_errors
 def list_catalog(**kwargs):
@@ -401,10 +429,11 @@ def list_catalog(**kwargs):
 	count_res = frappe.get_list(
 		"A2C Loan Product",
 		filters=filters,
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 		ignore_permissions=False,
 	)
-	total = count_res[0].get("COUNT(*)") if count_res else 0
+	total = count_res[0].get("count") if count_res else 0
 	pagination = {
 		"page": (start // limit) + 1,
 		"limit": limit,
@@ -420,7 +449,6 @@ def list_catalog(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(SaveProductSchema)
 @handle_api_errors
 def save_product(**kwargs):
@@ -461,7 +489,6 @@ def save_product(**kwargs):
 	return success_response(message="Product saved successfully")
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(SaveProductSchema)
 @handle_api_errors
 def unsave_product(**kwargs):
@@ -475,7 +502,6 @@ def unsave_product(**kwargs):
 	return success_response(message="Product removed from saved list")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(PaginationSchema)
 @handle_api_errors
 def get_saved_products(**kwargs):
@@ -560,7 +586,6 @@ def get_saved_products(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @handle_api_errors
 def get_catalog_facets(**kwargs):
 	"""Static filter options for the discovery sidebar, using global definitions."""
@@ -675,7 +700,6 @@ _BANK_PUBLIC_FIELDS = (
 )
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetBankDetailsSchema)
 @handle_api_errors
 def get_bank_details(**kwargs):

@@ -1,5 +1,7 @@
 # OAN Access to Credit (A2C) Identity Management Architecture
 
+> **Status: proposal, not implemented.** A2C signs its own RS256 JWTs through `oan_auth_service` today (see `design_decisions.md` §2). Nothing in the code uses Keycloak. Keep this as the option to revisit when Fayda login is built.
+
 ## Overview
 
 This document outlines the architectural approach for integrating Keycloak as the Identity and Access Management (IAM) provider for the OpenAgriNet (OAN) Frappe application, using a strictly stateless JWT (Bearer token) architecture to support both Mobile and Web headess clients.
@@ -28,7 +30,7 @@ Unlike traditional server-side applications, the Mobile and Web frontends intera
 
 Frappe's legacy architecture generates and validates symmetric `HS256` tokens. Keycloak issues asymmetric `RS256` tokens signed via a JSON Web Key Set (JWKS).
 
-To ensure backward compatibility, the Frappe authentication middleware (`oan_a2c/api/middleware.py`) uses a **Dual-Mode Gateway**:
+To ensure backward compatibility, the Frappe authentication middleware (`oan_auth_service/api/middleware.py`) uses a **Dual-Mode Gateway**:
 
 1. **Header Inspection:** Upon receiving an API request, the middleware intercepts the header and inspects the unverified JWT algorithm (`alg`).
 2. **Native Mode (Fallback):** If `alg == 'HS256'`, the middleware decodes the token using the system's local `encryption_key`.

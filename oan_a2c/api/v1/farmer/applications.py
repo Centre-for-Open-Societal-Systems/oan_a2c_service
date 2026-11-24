@@ -1,6 +1,8 @@
+import json
+
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, now_datetime
 from pydantic import BaseModel, Field
 
 from oan_a2c.a2c_marketplace.roles import DEVELOPMENT_AGENT_ROLE, FARMER_ROLE
@@ -12,6 +14,7 @@ from oan_a2c.a2c_marketplace.stages import (
 from oan_a2c.api.utils import (
 	apply_status_transition,
 	handle_api_errors,
+	idempotent,
 	require_role,
 	success_response,
 	to_tz_aware_iso,
@@ -39,7 +42,6 @@ class UpdateFarmerApplicationSchema(BaseModel):
 	loan_reason: str | None = Field(None, max_length=2000)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetAllLoansSchema)
 @handle_api_errors
 @require_role([FARMER_ROLE])
@@ -63,10 +65,11 @@ def list_applications(**kwargs):
 	count_res = frappe.get_list(
 		"A2C Loan Application",
 		filters=filters,
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 		ignore_permissions=False,
 	)
-	total_records = count_res[0].get("COUNT(*)") if count_res else 0
+	total_records = count_res[0].get("count") if count_res else 0
 
 	records = frappe.get_list(
 		"A2C Loan Application",
@@ -83,6 +86,7 @@ def list_applications(**kwargs):
 			"loan_product_name",
 			"bank",
 			"creation",
+			"submitted_at",
 		],
 		order_by=order_by,
 		limit_start=offset,
@@ -96,6 +100,7 @@ def list_applications(**kwargs):
 		r["loan_amount"] = float(r["loan_amount"]) if r.get("loan_amount") else 0.0
 		r["requested_amount"] = float(r["requested_amount"]) if r.get("requested_amount") else 0.0
 		r["creation"] = to_tz_aware_iso(r["creation"])
+		r["submitted_at"] = to_tz_aware_iso(r["submitted_at"]) if r.get("submitted_at") else None
 
 	pagination = {
 		"page": page,
@@ -110,7 +115,6 @@ def list_applications(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(LoanApplicationIDSchema)
 @handle_api_errors
 @require_role([FARMER_ROLE])
@@ -150,6 +154,7 @@ def get_application(**kwargs):
 		"current_step": cint(doc.current_step),
 		"loan_officer": doc.loan_officer,
 		"creation": to_tz_aware_iso(doc.creation),
+		"submitted_at": to_tz_aware_iso(doc.submitted_at) if doc.submitted_at else None,
 		"date_of_birth": str(doc.date_of_birth) if doc.date_of_birth else None,
 		"gender": doc.gender,
 		"marital_status": doc.marital_status,
@@ -170,10 +175,20 @@ def get_application(**kwargs):
 		"certification_id": doc.certification_id,
 		"certification_photo_url": doc.certification_photo_url,
 	}
+
+	raw_data = doc.get("farmer_data_json")
+	if not raw_data and doc.farmer_profile:
+		raw_data = frappe.db.get_value("A2C Farmer Profile", doc.farmer_profile, "farmer_data_json")
+	if isinstance(raw_data, str):
+		try:
+			raw_data = json.loads(raw_data)
+		except Exception:
+			pass
+	data["farmer_data"] = raw_data or {}
+
 	return success_response(data=data, message="Application retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(UpdateFarmerApplicationSchema)
 @handle_api_errors
 @require_role([FARMER_ROLE])
@@ -201,10 +216,10 @@ def update_application(**kwargs):
 	return success_response(message="Application updated successfully")
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(CreateFarmerApplicationSchema)
 @handle_api_errors
 @require_role([FARMER_ROLE])
+@idempotent
 def create_application(**kwargs):
 	"""Creates an Active application for the farmer."""
 	user = frappe.session.user
@@ -261,6 +276,7 @@ def create_application(**kwargs):
 			"woreda": profile.woreda,
 			"kebele": profile.kebele,
 			"farmer_id": profile.farmer_id,
+			"farmer_data_json": profile.get("farmer_data_json"),
 		}
 	)
 	app.insert(ignore_permissions=False)
@@ -268,10 +284,10 @@ def create_application(**kwargs):
 	return success_response(data={"application_id": app.name}, message="Application created successfully")
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(LoanApplicationIDSchema)
 @handle_api_errors
 @require_role([FARMER_ROLE, DEVELOPMENT_AGENT_ROLE])
+@idempotent
 def submit_application(**kwargs):
 	"""Submits an Active application to the bank (transitions to In Transition)."""
 	application_id = kwargs.get("application_id")
@@ -289,5 +305,10 @@ def submit_application(**kwargs):
 		doc.db_set("stage_label", initial_stage["label"])
 
 	apply_status_transition(doc, "In Transition")
+	submitted_at = now_datetime()
+	doc.db_set("submitted_at", submitted_at)
 
-	return success_response(message="Application submitted successfully")
+	return success_response(
+		data={"submitted_at": to_tz_aware_iso(submitted_at)},
+		message="Application submitted successfully",
+	)

@@ -1,0 +1,131 @@
+# Values for the oan-a2c-service chart (helm/oan-a2c-service).
+# Target: the QA RKE2 node (qa.oanstaging.com), the staging environment, installed by the Jenkins stage "staging → QA cluster (helm)"
+# (ci/deploy-helm-dev.sh with DEPLOY_ENV=staging). The same file runs a local single-node cluster (docs/a2c.md, "Local").
+# Release `a2c`, namespace `a2c`.
+#
+# Set at install, not here:
+# - frappe.image.tag: the Jenkins tag `<version>-staging.<build>` 
+# - frappe.dbHost: set below, the shared PostgreSQL of the oan-frappe-common release (namespace frappe-common)
+
+global:
+  # The hosts of iamServices and openg2pSettings (chart values.yaml) follow it.
+  baseDomain: qa.oanstaging.com
+
+openg2pSettings:
+  # The dev partner client has no service account: it logs in with the username and password
+  # of Secret oan-a2c-openg2p-partner.
+  partner_grant_type: password
+
+frappe:
+  image:
+    # Jenkinsfile ECR_REPO `eoan/oan-a2c-service/a2c-service`. A local build tagged with this name
+    # is used without a pull (pullPolicy IfNotPresent).
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/oan-a2c-service/a2c-service
+
+  # No imagePullSecrets on QA: the node pulls from ECR with its IAM role (kubelet
+  # ecr-credential-provider, docs/operations/oan-dev-deploy.md). Locally, a locally built image needs no pull.
+
+  dbHost: oan-frappe-common-db-postgresql-subchart.frappe-common.svc.cluster.local
+  dbRootUser: postgres
+
+  nginx:
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPU: 80
+      targetMemory: null
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+    environment:
+      # The desk host (oan-a2c-gateway.yaml desk.host) is not the site name, so nginx names the site itself.
+      frappeSiteNameHeader: a2c-service.qa.oanstaging.com
+      # APISIX reaches nginx from the RKE2 pod network: trust its X-Forwarded-For for the client address.
+      upstreamRealIPAddress: 10.42.0.0/16
+
+  worker:
+    gunicorn:
+      autoscaling:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 2
+        targetCPU: 80
+        targetMemory: null
+      resources:
+        requests:
+          cpu: 50m
+          memory: 384Mi
+    default:
+      autoscaling:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 2
+        targetCPU: 85
+        targetMemory: null
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+    short:
+      autoscaling:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 2
+        targetCPU: 85
+        targetMemory: null
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+    long:
+      autoscaling:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 2
+        targetCPU: 85
+        targetMemory: null
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+
+  socketio:
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPU: 80
+      targetMemory: null
+    resources:
+      requests:
+        cpu: 20m
+        memory: 128Mi
+  persistence:
+    worker:
+      # ReadWriteMany from the NFS server, see nfs-csi.yaml.
+      storageClass: nfs-csi
+
+  siteConfig:
+    values:
+      host_name: https://a2c-service.qa.oanstaging.com
+    # Demo data. Built and pushed alongside the service image from ci/seed.
+    seed:
+      enabled: false
+      image:
+        repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/oan-a2c-service/a2c-seed
+        tag: demo-20261108
+
+  # APISIX runs in this cluster and reaches the Frappe Services directly: no node port.
+  gatewayAccess:
+    enabled: false
+
+  jobs:
+    configure:
+      # nfs-csi creates each volume directory with mode 0777 (mountPermissions), so the
+      # Frappe user can write it. The upstream root `chown -R` only races with Pods that
+      # write into sites/ while the jobs run, and its failure fails the job.
+      fixVolume: false
+    createSite:
+      siteName: a2c-service.qa.oanstaging.com

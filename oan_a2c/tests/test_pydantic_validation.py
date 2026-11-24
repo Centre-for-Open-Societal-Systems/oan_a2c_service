@@ -177,6 +177,21 @@ class TestPydanticValidation(unittest.TestCase):
 			CreateLeadSchema(phone_number="+251911223344", first_name=long_name)
 		self.assertIn("first_name", str(ctx.exception))
 
+	def test_create_lead_schema_phone_validation_error_clean(self):
+		from oan_a2c.api.utils import validate_request
+		from oan_a2c.api.v1.leads import CreateLeadSchema
+
+		@validate_request(CreateLeadSchema)
+		def dummy_create_lead(**kwargs):
+			return {"status": "success"}
+
+		res = dummy_create_lead(phone_number="+251744444444")
+		self.assertEqual(res.get("status"), "error")
+		self.assertEqual(res.get("code"), "VALIDATION_ERROR")
+		phone_err = res.get("details", {}).get("phone_number", "")
+		self.assertFalse(phone_err.startswith("Value error,"))
+		self.assertNotIn("+251744444444", phone_err)
+
 	def test_register_bank_schema_entity_type(self):
 		from pydantic import ValidationError
 

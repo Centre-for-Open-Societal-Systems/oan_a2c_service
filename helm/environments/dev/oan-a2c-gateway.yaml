@@ -1,0 +1,82 @@
+# Values for the oan-a2c-gateway chart (oan_a2c/apisix/k8s).
+# Target: the oan_dev k3s node, namespace `a2c`, installed by the Jenkins stage
+# "develop → gateway (apisix)" (ci/deploy-gateway.sh). APISIX and its Ingress Controller run
+# in namespace api6-gateway on the same node, so the routes reach the A2C Frappe Service
+# directly. See apisix/README.md.
+#
+# Set at install, not here:
+# - redis.host: the Redis Service of the APISIX release (ci/deploy-gateway.sh looks it up)
+#
+# For a gateway in another cluster set web.externalHosts to the app nodes' private addresses and
+# web.port to the node port of gatewayAccess in oan-a2c-service.yaml.
+
+ingressClassName: apisix
+
+# Namespace of the APISIX release, which owns the consumers shared by several apps
+# (the IVR vendor). Routes whitelist them as `<this>_<name>`.
+sharedConsumerNamespace: api6-gateway
+
+# Domain of this environment; hosts below are built from it (the chart runs them through tpl).
+global:
+  baseDomain: development.oanstaging.com
+
+# The public host; routes match it, so A2C and grievance (which share /v1/auth/*) stay
+# apart on one gateway.
+hosts:
+  - a2c-service.{{ .Values.global.baseDomain }}
+
+# No `tls`: in dev APISIX terminates TLS for every *.development.oanstaging.com host with one wildcard
+# (oan-helm environments/dev/manifests/apisix-edge.yaml), so this chart creates no ApisixTls.
+
+# Frappe site name, sent as Host because Frappe selects the site from it. Must equal
+# siteName in oan-a2c-service.yaml.
+siteName: a2c-service.{{ .Values.global.baseDomain }}
+
+# With externalHosts set, serviceName only names the ApisixUpstream, and port is the node
+# port of oan-a2c-service.yaml gatewayAccess. Without it, serviceName and port are a Service in
+# this namespace (APISIX and Frappe in one cluster): the Frappe gunicorn Service, port 8000.
+web:
+  serviceName: a2c-frappe-gunicorn
+  externalHosts: []
+  port: 8000
+  # Probe each node's port through the Service. Without this, APISIX keeps sending
+  # requests to a node that is down. `host` is the Frappe site name.
+  healthCheck:
+    active:
+      type: http
+      httpPath: /api/method/ping
+      host: a2c-service.{{ .Values.global.baseDomain }}
+      timeout: 3
+      healthy:
+        interval: 5s
+        successes: 2
+        httpCodes: [200]
+      unhealthy:
+        interval: 5s
+        httpFailures: 3
+        tcpFailures: 3
+        timeout: 3
+        httpCodes: [500, 502, 503, 504]
+
+
+# Source addresses allowed on the partner webhook routes. Development defaults; narrow to
+# the partners' egress CIDRs (OpenG2P, telco IVR) before go-live.
+ipAllowlist:
+  - 127.0.0.1/32
+  - ::1/128
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+# Localhost only until the A2C UI hosts are confirmed.
+corsOriginRegexes:
+  - https?://localhost(:[0-9]+)?
+
+# The Frappe desk (/app) on its own host, sent to the frappe nginx Service (templates/desk.yaml). Public on
+# this dev instance; `allowlist` (CIDRs) restricts it, `enabled: false` removes it.
+desk:
+  enabled: true
+  host: a2c-service-desk.{{ .Values.global.baseDomain }}
+  serviceName: a2c-frappe
+  port: 8080
+  allowlist: []

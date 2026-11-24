@@ -13,6 +13,83 @@ from oan_a2c.a2c_marketplace.permissions import (  # pyright: ignore[reportMissi
 	BankNotOnboarded,
 )
 
+_INCR_WITH_WINDOW = """
+local count = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+
+def _incr_counter(key: str, window: int) -> int:
+	"""Count one rate-limit hit without `EXPIRE ... NX`, which Redis 6 rejects."""
+	return int(frappe.cache.eval(_INCR_WITH_WINDOW, 1, frappe.cache.make_key(key), window))
+
+
+def _patch_auth_service_rate_limit() -> None:
+	"""Make oan_auth_service's rate limiter work on Redis 6.
+
+	Builds of oan_auth_service before 2fdac36 count hits with `EXPIRE ... NX`, a Redis 7.0
+	flag, so every rate-limited endpoint answers 500 on an older server. The fixed library
+	defines `_INCR_WITH_WINDOW`; when it is present this does nothing. Drop it once every
+	deployed image carries that fix.
+	"""
+	try:
+		from oan_auth_service.api import utils as auth_utils  # pyright: ignore[reportMissingImports]
+	except ImportError:
+		return
+	if not hasattr(auth_utils, "_INCR_WITH_WINDOW"):
+		auth_utils.incr_counter = _incr_counter
+
+
+_patch_auth_service_rate_limit()
+
+
+def _patch_auth_service_idempotency() -> None:
+	"""Make oan_auth_service's @idempotent work outside an HTTP request.
+
+	In oan_auth_service, idempotent() accesses frappe.request directly, which raises
+	RuntimeError: object is not bound when called outside a web request (tests, console, workers).
+	Drop once oan_auth_service safely reads getattr(frappe.local, 'request', None).
+	"""
+	try:
+		from oan_auth_service.api import (
+			idempotency as auth_idempotency,  # pyright: ignore[reportMissingImports]
+		)
+	except ImportError:
+		return
+
+	orig_idempotent = auth_idempotency.idempotent
+
+	def safe_idempotent(fn=None, *, required=False):
+		dec = orig_idempotent(required=required)
+
+		def decorator(target_fn):
+			orig_wrapper = dec(target_fn)
+
+			@wraps(target_fn)
+			def wrapper(*args, **kwargs):
+				if not getattr(frappe.local, "request", None):
+					return target_fn(*args, **kwargs)
+				return orig_wrapper(*args, **kwargs)
+
+			return wrapper
+
+		return decorator(fn) if fn else decorator
+
+	auth_idempotency.idempotent = safe_idempotent
+
+
+_patch_auth_service_idempotency()
+
+try:
+	from oan_auth_service.api.idempotency import idempotent  # pyright: ignore[reportMissingImports]
+except ImportError:
+
+	def idempotent(fn=None, *, required=False):
+		return fn if fn else lambda f: f
+
 
 class _DummyException(Exception):
 	pass
@@ -47,7 +124,7 @@ def validate_password_complexity(value: str) -> str:
 
 
 def validate_request(schema: type[BaseModel]):
-	"""Decorator to validate whitelisted API inputs using a Pydantic schema.
+	"""Decorator to validate API inputs using a Pydantic schema.
 
 	Parses, casts types, and validates the inputs.
 	Returns a standardized error response if validation fails.
@@ -73,7 +150,10 @@ def validate_request(schema: type[BaseModel]):
 				errors = {}
 				for err in e.errors():
 					loc = ".".join(str(loc_item) for loc_item in err["loc"])
-					errors[loc] = err["msg"]
+					msg = err["msg"]
+					if msg.startswith("Value error, "):
+						msg = msg[len("Value error, ") :]
+					errors[loc] = msg
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
@@ -229,6 +309,46 @@ def resolve_workflow_transition(doc, target_status: str, roles: list[str] | None
 	}
 
 
+def match_allowed_tokens(text: str, allowed: set | list | tuple, strict: bool = True) -> list[str] | None:
+	"""Split comma-separated `text`, keeping `allowed` values that contain commas intact.
+
+	Matching is greedy longest-first, so when both "a" and "a,b" are allowed, the
+	input "a,b" reads as the single value "a,b" rather than two.
+
+	`strict=True` returns None the moment a token isn't an allowed value, letting
+	the caller fall back to a plain split and raise its own error. `strict=False`
+	instead consumes up to the next comma as a literal token, so unknown values
+	pass through to be matched (or not) downstream.
+	"""
+	if not text:
+		return []
+	allowed_sorted = sorted({str(a).strip() for a in allowed if str(a).strip()}, key=len, reverse=True)
+	tokens = []
+	remaining = text.strip()
+	while remaining:
+		for item_str in allowed_sorted:
+			if remaining == item_str:
+				tokens.append(item_str)
+				remaining = ""
+				break
+			if remaining.startswith(item_str):
+				rest = remaining[len(item_str) :].lstrip()
+				if rest.startswith(","):
+					tokens.append(item_str)
+					remaining = rest[1:].lstrip()
+					break
+		else:
+			# nothing allowed matched at this position
+			if strict:
+				return None
+			token, _sep, remaining = remaining.partition(",")
+			token = token.strip()
+			if token:
+				tokens.append(token)
+			remaining = remaining.lstrip()
+	return tokens
+
+
 def parse_multi_value(value, allowed=None):
 	"""Split a single value or comma-separated string into a de-duplicated list.
 
@@ -239,15 +359,25 @@ def parse_multi_value(value, allowed=None):
 	"""
 	if value is None:
 		return []
-	if isinstance(value, (list, tuple)):
+	if isinstance(value, (list, tuple, set)):
 		requested = [str(v).strip() for v in value]
 	else:
 		v_str = str(value).strip()
+		if not v_str:
+			return []
 		if v_str.startswith("[") and v_str.endswith("]"):
 			try:
 				parsed = frappe.parse_json(v_str)
 				requested = [str(v).strip() for v in parsed] if isinstance(parsed, list) else [v_str]
 			except Exception:
+				requested = [v.strip() for v in v_str.split(",")]
+		elif allowed is not None and v_str in allowed:
+			requested = [v_str]
+		elif allowed is not None:
+			matched_tokens = match_allowed_tokens(v_str, allowed)
+			if matched_tokens is not None:
+				requested = matched_tokens
+			else:
 				requested = [v.strip() for v in v_str.split(",")]
 		else:
 			requested = [v.strip() for v in v_str.split(",")]
@@ -336,37 +466,31 @@ def validate_email_string(v):
 
 
 def validate_phone_string(v):
-	"""Validate and normalize a phone number.
+	"""Validate a phone number with oan_auth_service's `validate_mobile`.
 
-	Single source of truth for phone validation across every API schema. Accepts
-	both international (`+251912345678`) and local (`0912345678`) formats, and
-	tolerates spaces/dashes/parens in the input (common when users paste). The
-	rule is on the digit count, not the punctuation:
-
-	  - strip everything except digits and a single leading '+'
-	  - require 10-15 digits
-	  - a leading 0 (local format) is allowed
-
-	Returns the normalized value (separators removed, '+' preserved if present).
+	One rule across login, sign-up and every a2c schema: an international mobile
+	number (`+251912345678`), checked by libphonenumber and returned as E.164.
 	Passes through None/empty so it composes with optional fields; required-ness
 	is enforced by the RequiredPhone variant.
+
+	`validate_mobile` signals failure with `frappe.throw`, which also queues a
+	message for the response. Pydantic validators must raise ValueError, so catch
+	it and drop the queued message.
 	"""
 	if v is None or v == "":
 		return v
-	import re
 
-	raw = str(v).strip()
-	has_plus = raw.startswith("+")
-	digits = re.sub(r"\D", "", raw)
+	from oan_auth_service.api.utils import validate_mobile
 
-	if not (10 <= len(digits) <= 15):
-		raise ValueError("Phone number must contain between 10 and 15 digits.")
-	# First significant digit can't be 0 for an international number; a local
-	# number may legitimately start with 0 (e.g. 0912345678).
-	if has_plus and digits.startswith("0"):
-		raise ValueError("An international (+) phone number cannot start with 0.")
-
-	return f"+{digits}" if has_plus else digits
+	try:
+		return validate_mobile(v)
+	except frappe.ValidationError as e:
+		if frappe.local.message_log:
+			frappe.local.message_log.pop()
+		msg = str(e)
+		if ": " in msg and any(ch.isdigit() for ch in msg.split(": ")[-1]):
+			msg = msg.rsplit(": ", 1)[0]
+		raise ValueError(msg) from None
 
 
 def validate_required_phone_string(v):
@@ -486,26 +610,6 @@ def error_response(message, code="GENERIC_ERROR", details=None):  # pyright: ign
 	return res
 
 
-def check_rate_limit(key: str, limit: int, window: int):
-	"""
-	Apply rate limits using Redis counter.
-	key    — unique per user+endpoint
-	limit  — max calls allowed in window
-	window — seconds
-	"""
-	cache = frappe.cache()
-	count = cache.get_value(key) or 0
-
-	if int(count) >= limit:
-		frappe.response.status_code = 429
-		frappe.throw(_("Rate limit exceeded. Try again later."), frappe.ValidationError)
-
-	pipeline = cache.pipeline()
-	pipeline.incr(key)
-	pipeline.expire(key, window)
-	pipeline.execute()
-
-
 def get_error_message(e, default_msg="Validation Error"):
 	error_msg = ""
 	if hasattr(e, "args") and e.args:
@@ -615,7 +719,10 @@ def handle_api_errors(func):
 			errors = {}
 			for err in e.errors():
 				loc = ".".join(str(loc_item) for loc_item in err["loc"])
-				errors[loc] = err["msg"]
+				msg = err["msg"]
+				if msg.startswith("Value error, "):
+					msg = msg[len("Value error, ") :]
+				errors[loc] = msg
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400
 			return error_response(message="Validation failed", code="VALIDATION_ERROR", details=errors)
@@ -715,7 +822,11 @@ def apply_status_transition(doc, target_status):
 	if doc.doctype == "A2C Loan Application" and target_status == "In Transition":
 		doc._enforce_submission_prerequisites()
 
-	doc = apply_workflow(doc, action)
+	doc.flags.in_workflow_transition = True
+	try:
+		doc = apply_workflow(doc, action)
+	finally:
+		doc.flags.in_workflow_transition = False
 
 	# apply_workflow moves `workflow_state` but not the separate `status` Select field that the
 	# rest of the app (lists, summaries, filters) reads. Mirror the new state onto `status` so
@@ -723,7 +834,83 @@ def apply_status_transition(doc, target_status):
 	if doc.get("status") != doc.workflow_state:
 		doc.db_set("status", doc.workflow_state)
 
+	if doc.doctype == "A2C Loan Application":
+		from oan_a2c.a2c_marketplace.stages import TERMINAL_ARCHETYPES
+
+		if doc.workflow_state in TERMINAL_ARCHETYPES:
+			sync_lead_with_loan(doc)
+
 	return doc
+
+
+# Lead moves the system makes when an agent-sourced loan reaches a final state, keyed by
+# the loan outcome (successful or not, per the stage archetype mapping), then by the lead's
+# current state. A loan can only be created from a Verified or Processed lead, and a
+# Granted lead must pass through Processed first.
+_LEAD_SYNC_PATHS = {
+	True: {"Verified": ("Processed", "Granted"), "Processed": ("Granted",)},
+	False: {"Verified": ("Rejected",), "Processed": ("Rejected",)},
+}
+
+
+def sync_lead_with_loan(loan_doc):
+	"""Grant or reject the lead behind a loan that just reached a terminal stage.
+
+	Whichever stage label the bank uses, its archetype decides the outcome: a successful
+	terminal archetype grants the lead, any other terminal archetype rejects it.
+
+	The bank decides on the loan, so the lead follows it instead of waiting for a second
+	manual call. The lead workflow gates these actions on roles the caller may not hold
+	(Mark Processed is a Development Agent action, Grant a Bank Agent one), so the moves run
+	as Administrator; the loan transition has already authorised the decision.
+
+	Best-effort: a lead that cannot follow (Dormant, already final, a missing record) is
+	logged and left alone, and never fails the loan decision itself.
+	"""
+	lead_id = loan_doc.get("lead_id")
+	if not lead_id:
+		return
+
+	from oan_a2c.a2c_marketplace.stages import SUCCESSFUL_ARCHETYPES
+
+	loan_state = loan_doc.workflow_state
+	lead_row = frappe.db.get_value("A2C Lead", lead_id, ["workflow_state", "status"], as_dict=True)
+	if not lead_row:
+		return
+	lead_state = lead_row.workflow_state or lead_row.status
+	steps = _LEAD_SYNC_PATHS[loan_state in SUCCESSFUL_ARCHETYPES].get(lead_state)
+	if not steps:
+		return
+
+	actor = frappe.session.user
+	form_dict = frappe.local.form_dict
+	frappe.db.savepoint("lead_sync")
+	try:
+		frappe.set_user("Administrator")  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+		lead = frappe.get_doc("A2C Lead", lead_id)
+		for target in steps:
+			lead = apply_status_transition(lead, target)
+	except Exception:
+		frappe.db.rollback(save_point="lead_sync")
+		frappe.log_error(
+			title=f"Lead sync failed | {lead_id}",
+			message=f"Loan {loan_doc.name} is {loan_state}; lead {lead_id} stayed {lead_state}.\n"
+			+ frappe.get_traceback(),
+		)
+		return
+	finally:
+		frappe.set_user(actor)  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+		frappe.local.form_dict = form_dict
+
+	audit_event = frappe.new_doc("A2C Lead Audit Event")
+	audit_event.lead = lead_id
+	audit_event.event_type = "Status Changed"
+	audit_event.event_title = "Status Updated"
+	description = _("Changed to {0}").format(steps[-1])
+	description += f"\nReason: loan application {loan_doc.name} is {loan_doc.stage_label or loan_state}"
+	description += f"\nUpdated by: {actor}"
+	audit_event.event_description = description
+	audit_event.insert(ignore_permissions=True)
 
 
 def notify_lead_event(lead_id, subject, message=None, notification_type="Alert"):

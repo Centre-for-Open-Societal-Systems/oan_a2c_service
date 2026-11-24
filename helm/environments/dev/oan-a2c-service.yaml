@@ -1,0 +1,67 @@
+# Values for the oan-a2c-service chart (helm/oan-a2c-service).
+# Target: the oan_dev k3s node, installed by the Jenkins stage "develop → oan_dev (helm)"
+# (ci/deploy-helm-dev.sh). The same file runs a local single-node cluster (docs/a2c.md, "Local").
+# Release `a2c`, namespace `a2c`.
+#
+# Set at install, not here:
+# - frappe.image.tag: the Jenkins tag `<__version__>-develop.<build>` (locally: `develop`)
+# - frappe.dbHost: set below, the shared PostgreSQL of the oan-frappe-common release (namespace frappe-common)
+
+global:
+  # The hosts of iamServices and openg2pSettings (chart values.yaml) follow it.
+  baseDomain: development.oanstaging.com
+
+openg2pSettings:
+  # The dev partner client has no service account: it logs in with the username and password
+  # of Secret oan-a2c-openg2p-partner.
+  partner_grant_type: password
+
+frappe:
+  image:
+    # Jenkinsfile ECR_REPO `eoan/oan-a2c-service/a2c-service`. A local build tagged with this name
+    # is used without a pull (pullPolicy IfNotPresent).
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/oan-a2c-service/a2c-service
+
+  # No imagePullSecrets on oan_dev: the node pulls from ECR with its IAM role (kubelet
+  # ecr-credential-provider, docs/operations/oan-dev-deploy.md). Locally, a locally built image needs no pull.
+
+  dbHost: oan-frappe-common-db-postgresql-subchart.frappe-common.svc.cluster.local
+  dbRootUser: postgres
+
+  nginx:
+    environment:
+      # The desk host (oan-a2c-gateway.yaml desk.host) is not the site name, so nginx names the site itself.
+      frappeSiteNameHeader: a2c-service.development.oanstaging.com
+      # APISIX reaches nginx from the k3s pod network: trust its X-Forwarded-For for the client address.
+      upstreamRealIPAddress: 10.42.0.0/16
+  persistence:
+    worker:
+      # ReadWriteMany from the NFS server, see nfs-csi.yaml.
+      storageClass: nfs-csi
+
+  siteConfig:
+    values:
+      host_name: https://a2c-service.development.oanstaging.com
+    # Demo data. Built and pushed alongside the service image from ci/seed.
+    seed:
+      enabled: true
+      image:
+        repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/oan-a2c-service/a2c-seed
+        tag: demo-20261108
+
+  # The central APISIX gateway runs in another cluster and reaches Frappe on this node port
+  # (web.port in oan-a2c-gateway.yaml). Allow it in the node's security group from the
+  # gateway cluster's addresses only.
+  gatewayAccess:
+    enabled: true
+    web:
+      nodePort: 30810
+
+  jobs:
+    configure:
+      # nfs-csi creates each volume directory with mode 0777 (mountPermissions), so the
+      # Frappe user can write it. The upstream root `chown -R` only races with Pods that
+      # write into sites/ while the jobs run, and its failure fails the job.
+      fixVolume: false
+    createSite:
+      siteName: a2c-service.development.oanstaging.com

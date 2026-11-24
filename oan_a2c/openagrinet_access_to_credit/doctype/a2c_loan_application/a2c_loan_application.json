@@ -10,6 +10,7 @@
  "field_order": [
   "application_id",
   "status",
+  "submitted_at",
   "stage_id",
   "stage_label",
   "current_step",
@@ -65,7 +66,9 @@
   "moisture_levels",
   "certification_geo_section",
   "certification_id",
-  "certification_photo_url"
+  "certification_photo_url",
+  "farmer_data_json",
+  "creation_month"
  ],
  "fields": [
   {
@@ -89,6 +92,12 @@
    "label": "Status",
    "options": "Active\nIn Transition\nCompleted\nRejected\nCancelled",
    "search_index": 1
+  },
+  {
+   "fieldname": "submitted_at",
+   "fieldtype": "Datetime",
+   "label": "Submitted At",
+   "read_only": 1
   },
   {
    "fieldname": "stage_id",
@@ -207,8 +216,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone Number",
-   "options": "Phone",
-   "reqd": 1
+   "options": "Phone"
   },
   {
    "fieldname": "email",
@@ -411,6 +419,21 @@
    "label": "Term Snapshot",
    "options": "A2C Loan Application Term Snapshot",
    "read_only": 1
+  },
+  {
+   "fieldname": "farmer_data_json",
+   "fieldtype": "JSON",
+   "label": "Farmer Data (JSON)"
+  },
+  {
+   "fieldname": "creation_month",
+   "fieldtype": "Date",
+   "label": "Creation Month",
+   "description": "First day of the month the application was lodged. Set on insert; the dashboard groups on it.",
+   "hidden": 1,
+   "read_only": 1,
+   "search_index": 1,
+   "no_copy": 1
   }
  ],
  "grid_page_length": 50,

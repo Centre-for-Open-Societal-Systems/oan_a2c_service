@@ -10,6 +10,7 @@ set -e
 : "${BACKEND_IP:?BACKEND_IP is required}"
 : "${BUILD_NUMBER:?BUILD_NUMBER is required}"
 : "${ECR_REPO:?ECR_REPO is required}"
+: "${IMMUTABLE_TAG:?IMMUTABLE_TAG is required}"
 : "${AWS_REGION:?AWS_REGION is required}"
 
 # Secrets, injected by Jenkins (withCredentials). These are deliberately NOT
@@ -21,6 +22,10 @@ set -e
 : "${JWT_SECRETS:?JWT_SECRETS is required - JSON map of kid to secret, e.g. {\"v1\": \"...\"}}"
 JWT_CURRENT_KID="${JWT_CURRENT_KID:-v1}"
 
+# OpenG2P portal password — a secret, injected from Jenkins (credential openg2p_password_develop).
+# base_url/username/db are non-secret and set below; only the password comes from a credential.
+: "${OPENG2P_PASSWORD:?OPENG2P_PASSWORD is required - OpenG2P portal password (Jenkins credential 'openg2p_password_develop')}"
+
 # JWT_SECRETS is interpolated inside single quotes in the heredoc below, so a
 # single quote in the value would break out of them and corrupt the command.
 case "${JWT_SECRETS}" in
@@ -28,13 +33,26 @@ case "${JWT_SECRETS}" in
 esac
 
 echo "=== Deploying to EC2: ${BACKEND_IP} ==="
-echo "=== Image: ${ECR_REPO}:develop-${BUILD_NUMBER} ==="
+echo "=== Image: ${ECR_REPO}:${IMMUTABLE_TAG} ==="
 
 ssh -i "${SSH_KEY}" \
     -o StrictHostKeyChecking=no \
     "${SSH_USER}@${BACKEND_IP}" << SSHEOF
 
     set -e
+
+    # Run the whole remote body as a brace group with stdin from /dev/null.
+    # WHY THIS MATTERS: this script is delivered to ssh on STDIN (the <<SSHEOF heredoc),
+    # and the remote shell reads its commands from that same stdin. The first
+    # 'docker compose exec -T ...' below would otherwise DRAIN the rest of the heredoc as
+    # its own stdin, so every command after it -- OpenG2P config, secrets, migrate, health
+    # check, and the asset-manifest cache bust -- silently never runs, and the deploy still
+    # exits 0 ("succeeds") having done almost nothing. That is the real reason the desk kept
+    # rendering stale/unstyled assets: the cache-bust step was never reached (confirmed in the
+    # develop-30 / staging-aws-7 build logs, which jump straight from "Setting OpenG2P config"
+    # to the post-heredoc line). The shell parses the entire { ... } before executing it, so the
+    # script is fully read off stdin up front; the '< /dev/null' then applies to every exec inside.
+    {
     cd /opt/oan_a2c
 
     echo "=== Logging in to ECR ==="
@@ -42,8 +60,14 @@ ssh -i "${SSH_KEY}" \
         docker login --username AWS --password-stdin \
         ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-    echo "=== Updating image tag in .env ==="
-    sed -i "s|oan-a2c:.*|oan-a2c:develop-${BUILD_NUMBER}|" .env
+    echo "=== Pointing .env at ${ECR_REPO}:${IMMUTABLE_TAG} (rewrites whole line) ==="
+    # Rewrite the ENTIRE ECR_IMAGE line rather than sed the tag in place: this migrates
+    # the stack from the legacy oan-a2c repo to oan/a2c on the first build, and is
+    # robust regardless of what repo/tag the .env currently holds.
+    # NOTE: no backticks in this comment -- it lives inside the unquoted <<SSHEOF heredoc,
+    # so backticks would be command-substituted on the Jenkins agent (that broke build #23/#24:
+    # "oan-a2c: command not found" / "oan/a2c: No such file or directory").
+    sed -i "s|^ECR_IMAGE=.*|ECR_IMAGE=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMMUTABLE_TAG}|" .env
 
     echo "=== Pulling new image ==="
     docker compose pull
@@ -63,23 +87,38 @@ ssh -i "${SSH_KEY}" \
     # restart does not recreate the link.
 
     echo "=== Setting OpenG2P config ==="
-    docker compose exec -T backend bench set-config -g openg2p_base_url "https://socialregistry-22062026.dev.openg2p.test"
+    # OpenG2P social-registry target for DEVELOP. registry-development.oanstaging.com has a
+    # real TLS cert, so VERIFY_SSL stays on. The old value (socialregistry-22062026.dev.openg2p.test)
+    # was a self-signed host AND paired with the wrong password -> CERTIFICATE_VERIFY_FAILED and,
+    # once past TLS, no uid. base_url/username/db are non-secret; the password is injected from
+    # the Jenkins 'openg2p_password_develop' credential (expands on the agent into the heredoc).
+    docker compose exec -T backend bench set-config -g openg2p_base_url "https://registry-development.oanstaging.com/"
     docker compose exec -T backend bench set-config -g openg2p_username "portal_agent"
-    docker compose exec -T backend bench set-config -g openg2p_password "portal_agent"
+    docker compose exec -T backend bench set-config -g openg2p_password "${OPENG2P_PASSWORD}"
     docker compose exec -T backend bench set-config -g openg2p_db "${OPENG2P_DB:-socialregistry}"
 
     echo "=== Setting secrets ==="
     # Everything here expands on the Jenkins agent before the heredoc is sent, which
     # is why these must come from injected credentials. A \$(...) in this block would
     # run on the agent rather than on EC2 and silently yield an empty value.
-    docker compose exec -T backend bench set-config -g secret_key "${SECRET_KEY}"
-    docker compose exec -T backend bench --site mysite.localhost set-config encryption_key "${ENCRYPTION_KEY}"
-    docker compose exec -T backend bench --site mysite.localhost set-config jwt_secrets '${JWT_SECRETS}' --parse
-    docker compose exec -T backend bench --site mysite.localhost set-config jwt_current_kid "${JWT_CURRENT_KID}"
+    # Best-effort. These are stable secrets (set once), and now that the deploy tail actually
+    # runs (see the { } < /dev/null fix), a bad value here must NOT abort the deploy before the
+    # migrate + asset cache-bust below. In particular 'set-config ... --parse' does
+    # ast.literal_eval on the value and dies with "invalid decimal literal" unless JWT_SECRETS
+    # is a real Python literal like {"v1": "..."} -- so each is non-fatal and just warns. If a
+    # WARN shows in the build log, fix the underlying Jenkins credential.
+    docker compose exec -T backend bench set-config -g secret_key "${SECRET_KEY}" || echo "WARN: secret_key set-config failed (continuing)"
+    docker compose exec -T backend bench --site mysite.localhost set-config encryption_key "${ENCRYPTION_KEY}" || echo "WARN: encryption_key set-config failed (continuing)"
+    docker compose exec -T backend bench --site mysite.localhost set-config jwt_secrets '${JWT_SECRETS}' --parse || echo "WARN: jwt_secrets set-config failed -- JWT_SECRETS not a valid literal? (continuing)"
+    docker compose exec -T backend bench --site mysite.localhost set-config jwt_current_kid "${JWT_CURRENT_KID}" || echo "WARN: jwt_current_kid set-config failed (continuing)"
+    docker compose exec -T backend bench --site mysite.localhost set-config jwt_self_registerable_roles '["A2C Bank Admin", "A2C Farmer"]' --parse || echo "WARN: jwt_self_registerable_roles set-config failed (continuing)"
 
     echo "=== Running migrations ==="
+    # Sync baked apps from image into the persistent volume's apps.txt before install/migrate
+    docker compose exec -T backend bash -c \
+        'for app in \$(ls -1 apps); do grep -qxF "\$app" sites/apps.txt 2>/dev/null || echo "\$app" >> sites/apps.txt; done'
+    docker compose exec -T backend bench --site mysite.localhost install-app oan_auth_service || true
     docker compose exec -T backend bench --site mysite.localhost migrate
-    docker compose exec -T backend bench --site mysite.localhost clear-cache
 
     echo "=== Restarting frontend ==="
     docker compose restart frontend
@@ -96,8 +135,65 @@ ssh -i "${SSH_KEY}" \
 
     echo "Health check passed (assets linked)"
 
+    # Asset-manifest cache bust -- deterministic stop -> flush -> start.
+    #
+    # Frappe caches the asset manifest (assets.json) in the *cache* Redis under a
+    # SHARED (site-independent) key. redis-cache is NOT recreated on deploy, so the
+    # PREVIOUS build's manifest survives it across an image bump; the new workers find
+    # that stale key already cached (a HIT) and never re-read the new on-disk manifest
+    # -> every /assets URL carries the old hash -> 404 -> unstyled desk. Two traps make
+    # the naive fix fail, and both bit earlier builds (the desk kept coming back stale
+    # "one build behind" on develop-28/29 and staging-aws-5/6):
+    #   - "bench clear-cache" is per-site and does NOT evict the shared assets_json key;
+    #   - restarting only the backend while queue-*/scheduler keep running lets a worker
+    #     re-populate the stale manifest into Redis right after the flush.
+    # Fix: take every frappe process down, flush the cache Redis while nothing can write
+    # to it, then bring them all back so each boots and reads the CURRENT manifest from
+    # disk. redis-cache/redis-queue/db stay up; only the cache contents are dropped.
+    echo "=== Busting asset-manifest cache (stop -> flush -> start) ==="
+    docker compose stop backend websocket queue-short queue-long scheduler
+    docker compose exec -T redis-cache redis-cli flushall || true
+    docker compose up -d backend websocket queue-short queue-long scheduler
+    sleep 15
+
+    # The backend can come back on a NEW container IP after the stop/start above, and
+    # frappe's frontend nginx resolves+CACHES the backend upstream IP at startup -- so
+    # after the backend restarts it keeps dialing the dead old IP and EVERY request 502s
+    # (confirmed: nginx "connect() failed (111: Connection refused) ... upstream 172.x:8000").
+    # Restart the frontend last so it re-resolves the current backend.
+    echo "=== Re-pointing frontend at the restarted backend ==="
+    docker compose restart frontend
+    sleep 8
+
+    # Verify. Written variable-free (bracket-dot regex, cmp/grep on files, no shell vars)
+    # so nothing has to be escaped through the heredoc. First confirm /login is actually
+    # served 200 (catches the frontend->backend 502 above); then confirm the served asset
+    # hash matches disk (catches a stale asset cache). Both are fatal.
+    echo "=== Verifying deploy ==="
+    curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login > /tmp/a2c_dev_login_code
+    echo "login_http:"; cat /tmp/a2c_dev_login_code; echo
+    if ! grep -q 200 /tmp/a2c_dev_login_code; then
+        echo "FAIL: /login did not return 200 (frontend cannot reach backend after cache-bust)"; exit 1
+    fi
+    curl -s http://localhost:8080/login | grep -oE 'login[.]bundle[.][A-Z0-9]+[.]css' | head -1 > /tmp/a2c_dev_served
+    docker compose exec -T backend sh -c 'ls sites/assets/frappe/dist/css/' | grep -oE 'login[.]bundle[.][A-Z0-9]+[.]css' | head -1 > /tmp/a2c_dev_ondisk
+    echo "=== served manifest ==="; cat /tmp/a2c_dev_served
+    echo "=== on-disk manifest ==="; cat /tmp/a2c_dev_ondisk
+    if [ -s /tmp/a2c_dev_served ] && ! cmp -s /tmp/a2c_dev_served /tmp/a2c_dev_ondisk; then
+        echo "FAIL: served manifest does not match on-disk assets (stale asset cache)"; exit 1
+    fi
+    echo "Deploy verified (login 200, assets fresh)"
+
+    # Reclaim disk: each deploy pulls a fresh oan/a2c:develop-<n> (~3.4GB); without this the
+    # box fills up over time and the next docker compose pull fails "no space left on device".
+    # -a removes images no running container uses (old app tags) -- the live stacks are untouched.
+    # (No backticks here: inside the unquoted <<SSHEOF heredoc they'd run on the Jenkins agent.)
+    echo "=== Pruning unused images ==="
+    docker image prune -af || true
+
     echo "=== Deployment complete ==="
     docker compose ps
+    } < /dev/null
 
 SSHEOF
 

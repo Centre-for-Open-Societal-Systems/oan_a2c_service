@@ -2,6 +2,7 @@ import re
 
 import frappe
 from frappe import _
+from oan_auth_service.api.utils import rate_limit_per_user
 from pydantic import BaseModel, Field, field_validator
 
 from oan_a2c.a2c_marketplace.doctype_schemas import (
@@ -10,7 +11,7 @@ from oan_a2c.a2c_marketplace.doctype_schemas import (
 	POSTAL_CODE_REGEX,
 	WEBSITE_REGEX,
 )
-from oan_a2c.a2c_marketplace.permissions import is_bank_unbound, require_bank_role
+from oan_a2c.a2c_marketplace.permissions import require_bank_role
 from oan_a2c.a2c_marketplace.roles import (
 	ADMIN_ROLE,
 	BANK_ADMIN_ROLE,
@@ -18,15 +19,20 @@ from oan_a2c.a2c_marketplace.roles import (
 	DEVELOPMENT_AGENT_ROLE,
 	FARMER_ROLE,
 )
+from oan_a2c.api.router import prefixed
 from oan_a2c.api.utils import (
 	RequiredPhone,
 	SafeEmail,
-	check_rate_limit,
 	handle_api_errors,
 	success_response,
 	validate_request,
 )
 from oan_a2c.api.v1.auth import create_user_account
+
+bank_route = prefixed("/api/v1/banks")
+# Not bank-scoped: upload_image is the platform's generic public-image endpoint
+# (bank logos and user avatars both go through it), so it sits at /v1/images.
+api_route = prefixed("/api/v1")
 
 ROLE_LEVELS: dict[str, int] = {
 	ADMIN_ROLE: 1,
@@ -85,6 +91,7 @@ class RegisterBankSchema(BaseModel):
 
 class UpdateBankProfileSchema(BaseModel):
 	bank_name: str | None = Field(None, max_length=140)
+	bank_code: str | None = Field(None, max_length=140)
 	brand_name: str | None = Field(None, max_length=140)
 	website: str | None = Field(
 		None,
@@ -107,6 +114,20 @@ class UpdateBankProfileSchema(BaseModel):
 	registered_phone: RequiredPhone | None = None
 	logo: str | None = Field(None, max_length=255)
 
+	@field_validator("bank_code")
+	@classmethod
+	def bank_code_not_blank(cls, v: str | None) -> str | None:
+		if v is not None and not re.sub(r"[^A-Za-z0-9]", "", v):
+			raise ValueError("Registration number is required.")
+		return v
+
+	@field_validator("registered_zone")
+	@classmethod
+	def zone_not_blank(cls, v: str | None) -> str | None:
+		if v is not None and not v.strip():
+			raise ValueError("Zone is required.")
+		return v
+
 
 class SaveOrgContactsSchema(BaseModel):
 	gro_name: str = Field(..., min_length=1, max_length=140)
@@ -119,6 +140,10 @@ class UploadKycSchema(BaseModel):
 	filename: str = Field(..., min_length=4, max_length=255, pattern=r"^.+\.pdf$")
 	# Max length approx 15MB for base64
 	filedata: str = Field(..., min_length=10, max_length=15000000)
+
+
+class DownloadKycSchema(BaseModel):
+	view: int | None = None
 
 
 class UploadImageSchema(BaseModel):
@@ -154,8 +179,23 @@ class ActivateBankSchema(BaseModel):
 
 
 class UpdateBankStatusSchema(BaseModel):
-	bank_code: str | None = None
+	# Always required now: only platform admins may call update_bank_status, and
+	# they always name the bank explicitly (there is no "my own bank" caller left).
+	bank_code: str = Field(..., min_length=1)
 	new_status: str = Field(..., pattern="^(In Review|Active|Suspended)$")
+
+
+# Allowed bank status transitions. Mirrors the `status` field options on
+# A2C Participating Bank ("In Review", "Active", "Suspended") and encodes the
+# onboarding lifecycle: a bank under review is approved (-> Active) or held
+# (-> Suspended); a live bank can be suspended; a suspended bank can be
+# reinstated. "In Review" is an entry state only -- nothing transitions back
+# into it -- so it is never a destination here.
+_BANK_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+	"In Review": frozenset({"Active", "Suspended"}),
+	"Active": frozenset({"Suspended"}),
+	"Suspended": frozenset({"Active"}),
+}
 
 
 def _validate_temp_password(v: str) -> str:
@@ -201,7 +241,6 @@ def normalize_tin(tin: str) -> str:
 	return re.sub(r"[^A-Z0-9]", "", str(tin).upper())
 
 
-@frappe.whitelist()
 @validate_request(RegisterBankSchema)
 @handle_api_errors
 def register_bank(**kwargs):
@@ -286,7 +325,7 @@ def register_bank(**kwargs):
 # -----------------
 # 3. save_org_contacts
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/contacts", methods=("PUT",), summary="Save bank contacts")
 @validate_request(SaveOrgContactsSchema)
 @handle_api_errors
 def save_org_contacts(**kwargs):
@@ -313,7 +352,7 @@ def save_org_contacts(**kwargs):
 # -----------------
 # 3b. upload_kyc_document
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/kyc-documents", methods=("POST",), summary="Upload KYC document")
 @validate_request(UploadKycSchema)
 @handle_api_errors
 @require_bank_role(BANK_ADMIN_ROLE)
@@ -361,21 +400,91 @@ def upload_kyc_document(**kwargs):
 
 
 # -----------------
+# 3b-ii. download_kyc_document
+# -----------------
+@bank_route("/me/kyc-documents", methods=("GET",), summary="Download KYC document")
+@validate_request(DownloadKycSchema)
+@handle_api_errors
+@require_bank_role(BANK_ADMIN_ROLE)
+def download_kyc_document(**kwargs):
+	"""
+	Streams the bank's stored KYC document back to the caller.
+
+	This is the only read path for the document. It is stored privately, and
+	/private/files/... sits outside the /v1 namespace the JWT middleware covers, so
+	a Bearer-token client hitting that path directly is treated as Guest and refused.
+	"""
+	user = frappe.session.user
+	bank = frappe.db.get_value(
+		"User Permission", {"user": user, "allow": "A2C Participating Bank"}, "for_value"
+	)
+
+	if not bank:
+		frappe.throw(_("No bank associated with the current user."))
+
+	frappe.has_permission("A2C Participating Bank", "read", doc=bank, throw=True)
+
+	file_url = frappe.db.get_value("A2C Participating Bank", bank, "kyc_document")
+	if not file_url:
+		frappe.throw(_("No KYC document has been uploaded for this bank."), frappe.DoesNotExistError)
+
+	# Resolve via the attachment link rather than file_url alone: that confirms the file
+	# is the one attached to *this* bank, so a stale or swapped kyc_document value cannot
+	# be used to read another bank's document.
+	file_name = frappe.db.get_value(
+		"File",
+		{
+			"file_url": file_url,
+			"attached_to_doctype": "A2C Participating Bank",
+			"attached_to_name": bank,
+		},
+		"name",
+	)
+	if not file_name:
+		frappe.throw(_("KYC document not found."), frappe.DoesNotExistError)
+
+	file_doc = frappe.get_doc("File", file_name)
+
+	frappe.local.response.filename = file_doc.file_name
+	# Raw bytes: pass empty encodings to bypass text decoding in File.get_content(),
+	# which corrupts binary files once re-encoded for the response.
+	frappe.local.response.filecontent = file_doc.get_content(encodings=())
+	frappe.local.response.type = "download"
+	if kwargs.get("view"):
+		frappe.local.response.display_content_as = "inline"
+
+
+# -----------------
 # 3d. upload_image
 # -----------------
-@frappe.whitelist()
+@api_route("/images", methods=("POST",), summary="Upload an image")
 @handle_api_errors
 @validate_request(UploadImageSchema)
 def upload_image(**kwargs):
+	"""Store a public image and return its URL. Attaching it to a record is the
+	caller's next step (bank logo via update_bank_profile, avatar via update_profile).
+
+	Deliberately has no @require_bank_role, unlike its neighbours in this module:
+	farmers and development agents upload avatars through it too. It only creates an
+	unattached public File, so authentication is the appropriate bar.
+	"""
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Authentication required"), frappe.AuthenticationError)
+
+	# Store the logo under a random, unguessable name instead of the caller's filename.
+	# /files/ is served straight off nginx with no permission check, so a predictable
+	# name (/files/cbo-logo.png) lets anyone enumerate the branding of banks that have
+	# not launched yet. UploadImageSchema already constrains the extension to
+	# png/jpg/jpeg/webp and sniffs the magic bytes, so the suffix is safe to carry over.
+	extension = kwargs.get("filename", "").rsplit(".", 1)[-1].lower()
+	stored_filename = "{0}.{1}".format(frappe.generate_hash(length=32), extension)
 
 	try:
 		file_doc = frappe.get_doc(
 			{
 				"doctype": "File",
-				"file_name": kwargs.get("filename"),
+				"file_name": stored_filename,
 				"content": kwargs.get("filedata"),
 				"decode": 1,
 				"is_private": 0,
@@ -393,7 +502,7 @@ def upload_image(**kwargs):
 # -----------------
 # 3c. get_bank_profile
 # -----------------
-@frappe.whitelist()
+@bank_route("/me", methods=("GET",), summary="Get bank profile")
 @handle_api_errors
 def get_bank_profile():
 	user = frappe.session.user
@@ -445,10 +554,23 @@ def get_bank_profile():
 	return success_response(data=data)
 
 
+def _bank_owned_file(file_url: str | None, bank: str) -> str | None:
+	"""File name if it was uploaded by a user of `bank`, else None."""
+	if not file_url:
+		return None
+	row = frappe.db.get_value("File", {"file_url": file_url}, ["name", "owner"], as_dict=True)
+	if not row:
+		return None
+	owner_bank = frappe.db.get_value(
+		"User Permission", {"user": row.owner, "allow": "A2C Participating Bank"}, "for_value"
+	)
+	return row.name if owner_bank == bank else None
+
+
 # -----------------
 # 3c-2. update_bank_profile
 # -----------------
-@frappe.whitelist()
+@bank_route("/me", methods=("PATCH",), summary="Update bank profile")
 @validate_request(UpdateBankProfileSchema)
 @handle_api_errors
 def update_bank_profile(**kwargs):
@@ -464,6 +586,16 @@ def update_bank_profile(**kwargs):
 		frappe.throw(_("Only Bank Admins can update the organization profile."), frappe.PermissionError)
 
 	doc = frappe.get_doc("A2C Participating Bank", bank)
+
+	new_bank_code = kwargs.get("bank_code")
+	if new_bank_code is not None:
+		new_bank_code = normalize_tin(new_bank_code)
+		if new_bank_code != doc.bank_code:
+			if frappe.db.exists(
+				"A2C Participating Bank", {"bank_code": new_bank_code, "name": ["!=", doc.name]}
+			):
+				frappe.throw(_("This registration number is already in use."), frappe.ValidationError)
+			doc.bank_code = new_bank_code
 
 	editable_fields = [
 		"bank_name",
@@ -484,10 +616,16 @@ def update_bank_profile(**kwargs):
 	for field in editable_fields:
 		if field in kwargs and kwargs.get(field) is not None:
 			new_val = kwargs.get(field)
-			if field == "logo" and doc.logo and doc.logo != new_val:
-				old_file = frappe.db.get_value("File", {"file_url": doc.logo}, "name")
-				if old_file:
-					frappe.delete_doc("File", old_file, ignore_permissions=True, force=True)
+			if field == "logo":
+				if new_val and not _bank_owned_file(new_val, bank):
+					frappe.throw(
+						_("Invalid logo: use an image uploaded to your own bank."),
+						frappe.ValidationError,
+					)
+				if doc.logo and doc.logo != new_val:
+					old_file = _bank_owned_file(doc.logo, bank)
+					if old_file:
+						frappe.delete_doc("File", old_file, ignore_permissions=True)
 			setattr(doc, field, new_val)
 
 	doc.save(ignore_permissions=True)
@@ -497,36 +635,49 @@ def update_bank_profile(**kwargs):
 # -----------------
 # 4. update_bank_status
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/status", methods=("PATCH",), summary="Update bank status")
 @handle_api_errors
 @validate_request(UpdateBankStatusSchema)
 def update_bank_status(**kwargs):
-	bank_code = kwargs.get("bank_code")
-	new_status = kwargs.get("new_status")
+	"""Change a bank's lifecycle status. Platform-operator action only.
 
-	user = frappe.session.user
+	Approving or suspending a bank is a marketplace-governance decision, never a
+	self-service one. Two rules make that concrete:
 
-	if is_bank_unbound(user):
-		if not bank_code:
-			frappe.throw(_("bank_code is required for administrators."), frappe.ValidationError)
-		bank_id = frappe.db.get_value("A2C Participating Bank", {"bank_code": bank_code}, "name")
-		if not bank_id:
-			frappe.throw(_("Bank {0} not found").format(bank_code), frappe.DoesNotExistError)
-	else:
-		user_doc = frappe.get_doc("User", user)
-		if not any(d.role == BANK_ADMIN_ROLE for d in user_doc.roles):
-			frappe.throw(_("Only Bank Admins can update bank status."), frappe.PermissionError)
+	* A bank must not be able to move itself to `Active`. `assert_bank_active`
+	  gates every product write on this status, so a self-approval would let a
+	  bank switch its own products live and bypass onboarding review entirely.
+	* A Development Agent is bank-*unbound* platform staff, not a platform
+	  *operator*; it has no authority over any bank's standing.
 
-		bank_id = frappe.db.get_value(
-			"User Permission", {"user": user, "allow": "A2C Participating Bank"}, "for_value"
+	So the gate is a single tier: only a platform admin -- A2C Administrator or
+	System Manager (ROLE_LEVELS level 1) -- may call this. Bank Admins (level 2),
+	Bank Agents and Development Agents (level 3) are all denied. The transition
+	itself is then validated against the bank's lifecycle state machine.
+	"""
+	bank_code = kwargs["bank_code"]
+	new_status = kwargs["new_status"]
+
+	if _get_user_level(frappe.session.user) != 1:
+		frappe.throw(
+			_("Only platform administrators can change a bank's status."),
+			frappe.PermissionError,
 		)
-		if not bank_id:
-			frappe.throw(_("No bank associated with the current user."), frappe.PermissionError)
+
+	bank_id = frappe.db.get_value("A2C Participating Bank", {"bank_code": bank_code}, "name")
+	if not bank_id:
+		frappe.throw(_("Bank {0} not found").format(bank_code), frappe.DoesNotExistError)
 
 	doc = frappe.get_doc("A2C Participating Bank", bank_id)
 
 	if doc.status == new_status:
 		return success_response(data={"message": _("Status is already {0}").format(new_status)})
+
+	if new_status not in _BANK_STATUS_TRANSITIONS.get(doc.status, frozenset()):
+		frappe.throw(
+			_("Cannot change bank status from {0} to {1}.").format(doc.status, new_status),
+			frappe.ValidationError,
+		)
 
 	doc.status = new_status
 	doc.save(ignore_permissions=True)
@@ -537,7 +688,7 @@ def update_bank_status(**kwargs):
 # -----------------
 # 5. invite_team_member
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/team", methods=("POST",), summary="Invite team member")
 @validate_request(InviteTeamMemberSchema)
 @handle_api_errors
 @require_bank_role(BANK_ADMIN_ROLE)
@@ -545,11 +696,11 @@ def invite_team_member(email: str, full_name: str, password: str, role: str = BA
 	"""Add a Bank Agent to the caller's bank with a temporary password.
 
 	Bank Agent only: a Bank Admin cannot mint another Bank Admin. New admins come
-	from self-registration (api.v1.auth.register_user, which pairs with
-	register_bank) or from a platform admin promoting an agent via update_user.
+	from self-registration (oan_auth_service's POST /api/v1/auth/register, which
+	pairs with register_bank) or from a platform admin promoting an agent via update_user.
 
 	The password is admin-chosen, so it is flagged must-change — the agent cannot
-	open a session with it, only rotate it (api.auth.set_initial_password).
+	open a session with it, only rotate it (oan_auth_service's POST /api/v1/auth/password/initial).
 	"""
 	role = resolve_assignable_role(role, {BANK_AGENT_ROLE})
 
@@ -616,7 +767,7 @@ def invite_team_member(email: str, full_name: str, password: str, role: str = BA
 # -----------------
 # 6. list_users
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/team", methods=("GET",), summary="List team members")
 @handle_api_errors
 @require_bank_role(BANK_ADMIN_ROLE)
 def list_users():
@@ -637,7 +788,7 @@ def list_users():
 	users = frappe.get_all(
 		"User",
 		filters={"name": ("in", bank_users)},
-		fields=["name", "email", "first_name", "enabled", "last_active", "a2c_must_change_password"],
+		fields=["name", "email", "first_name", "enabled", "last_active", "oan_must_change_password"],
 	)
 
 	roles = frappe.get_all(
@@ -652,7 +803,7 @@ def list_users():
 		u["role"] = user_role_map.get(u.name)
 		# Surfaced so the team list can flag members who have not yet set their own
 		# password — the ones whose credential the admin still knows.
-		u["must_change_password"] = bool(u.pop("a2c_must_change_password", 0))
+		u["must_change_password"] = bool(u.pop("oan_must_change_password", 0))
 
 	return success_response(data={"users": users})
 
@@ -726,7 +877,7 @@ def _assert_can_manage_member(email: str) -> tuple[int, bool, bool]:
 	return caller_level, is_platform_admin, is_bank_admin
 
 
-@frappe.whitelist()
+@bank_route("/me/team/<user_id>", methods=("PATCH",), summary="Update team member")
 @validate_request(UpdateUserSchema)
 @handle_api_errors
 def update_user(
@@ -767,31 +918,29 @@ def update_user(
 # -----------------
 # 8. reset_member_password
 # -----------------
-@frappe.whitelist()
+@bank_route("/me/team/<user_id>/password-reset", methods=("POST",), summary="Reset member password")
 @validate_request(ResetMemberPasswordSchema)
 @handle_api_errors
 @require_bank_role(BANK_ADMIN_ROLE)
+@rate_limit_per_user(limit=10, window=300)
 def reset_member_password(email: str, password: str):
 	"""Issue a fresh temporary password for a Bank Agent (forgotten-password path).
 
 	The agent cannot sign in with it — it is flagged must-change, so login returns
 	PASSWORD_CHANGE_REQUIRED until they set their own through
-	api.auth.set_initial_password.
+	oan_auth_service's /auth/password/initial.
 
 	Any session the agent currently holds dies immediately: the refresh tokens are
 	deleted here and the JWT middleware rejects access tokens for a flagged user.
 	That is deliberate — when the reason for the reset is a suspected compromise,
 	"issue a new password" has to also mean "cut off the current session".
 	"""
-	check_rate_limit(f"rl:reset_member_pwd:{frappe.session.user}", limit=10, window=300)
-
 	_assert_can_manage_member(email)
 
-	from frappe.utils.password import update_password as update_password_db
+	from oan_auth_service.api.v1.auth import issue_temporary_password
 
-	update_password_db(user=email, pwd=password, logout_all_sessions=True)
-	frappe.db.set_value("User", email, "a2c_must_change_password", 1)
-	frappe.db.delete("A2C User Refresh Token", {"user": email})
+	# Sets the password, flags it must-change and revokes the user's refresh tokens.
+	issue_temporary_password(email, password)
 
 	frappe.logger("oan_a2c").info(f"temporary password reissued by={frappe.session.user} for={email}")
 

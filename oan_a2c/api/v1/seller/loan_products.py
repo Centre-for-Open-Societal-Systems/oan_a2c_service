@@ -135,7 +135,6 @@ class GetProductCommentSchema(BaseModel):
 	product_id: str = Field(..., min_length=1, max_length=140)
 
 
-@frappe.whitelist()
 @validate_request(CreateProductSchema)
 @handle_api_errors
 @bank_scoped
@@ -171,7 +170,6 @@ def create_product(**kwargs):
 	return success_response(data={"message": _("Products created"), "product_ids": created_ids})
 
 
-@frappe.whitelist()
 @validate_request(UpdateProductSchema)
 @handle_api_errors
 def update_product(**kwargs):
@@ -220,7 +218,6 @@ def update_product(**kwargs):
 	)
 
 
-@frappe.whitelist()
 @validate_request(SetProductStatusSchema)
 @handle_api_errors
 def set_product_status(**kwargs):
@@ -288,7 +285,6 @@ def set_product_status(**kwargs):
 	)
 
 
-@frappe.whitelist()
 @handle_api_errors
 def list_products(
 	status: str | None = None,
@@ -303,6 +299,12 @@ def list_products(
 	page: int = 1,
 	page_size: int = 20,
 ):
+	# Bound pagination: a negative page gives a negative offset, and an unbounded
+	# page_size is a memory/DoS vector. Banks hold few products, so a generous cap is
+	# safe and needs no pagination UI.
+	page = max(1, int(page))
+	page_size = min(200, max(1, int(page_size)))
+
 	base_filters = {}
 
 	if status:
@@ -330,11 +332,13 @@ def list_products(
 	matching_product_ids = None
 
 	if category:
+		# Exact match on the category id, matching the farmer catalog. A substring
+		# match here over-selected (e.g. "agri" pulled in "agriculture-secondary").
 		# get_list applies the A2C Term Relationship bank scope (it is bank-scoped),
 		# so a caller cannot enumerate another bank's taxonomy via category search.
 		cat_ids = frappe.get_list(
 			"A2C Term Relationship",
-			filters={"term_type": "Category", "term_category": ["like", f"%{category}%"]},
+			filters={"term_type": "Category", "term_category": category},
 			pluck="loan_product",
 		)
 		matching_product_ids = set(cat_ids)
@@ -342,7 +346,7 @@ def list_products(
 	if tag:
 		tag_ids = frappe.get_list(
 			"A2C Term Relationship",
-			filters={"term_type": "Tag", "term_tag": ["like", f"%{tag}%"]},
+			filters={"term_type": "Tag", "term_tag": tag},
 			pluck="loan_product",
 		)
 		if matching_product_ids is None:
@@ -368,9 +372,10 @@ def list_products(
 	count_res = frappe.get_list(
 		"A2C Loan Product",
 		filters=base_filters,
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 	)
-	total_records = count_res[0].get("COUNT(*)") if count_res else 0
+	total_records = count_res[0].get("count") if count_res else 0
 
 	# get_list (not get_all) enforces DocPerm AND runs the bank_scope_query hook,
 	# so callers without read permission (e.g. Development Agent, which has no
@@ -415,10 +420,10 @@ def list_products(
 		app_counts = frappe.get_list(
 			"A2C Loan Application",
 			filters={"loan_product": ["in", product_names]},
-			fields=["loan_product", {"COUNT": "*"}],
+			fields=["loan_product", {"COUNT": "*", "as": "count"}],
 			group_by="loan_product",
 		)
-		counts_map = {row.loan_product: row.get("COUNT(*)") for row in app_counts}
+		counts_map = {row.loan_product: row.get("count") for row in app_counts}
 
 		# Batch resolve bank display names for the result rows. A2C Participating Bank
 		# is the public lender directory (not bank-scoped), so get_all is fine.
@@ -451,7 +456,6 @@ def list_products(
 	return success_response(data={"products": products}, pagination=pagination)
 
 
-@frappe.whitelist()
 @validate_request(GetProductSchema)
 @handle_api_errors
 def get_product(**kwargs):
@@ -519,7 +523,6 @@ def get_product(**kwargs):
 	return success_response(data={"product": product_data})
 
 
-@frappe.whitelist()
 @validate_request(GetProductCommentSchema)
 @handle_api_errors
 def get_product_comment(**kwargs):

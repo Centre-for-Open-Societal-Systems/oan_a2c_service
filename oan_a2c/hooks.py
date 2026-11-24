@@ -9,7 +9,7 @@ app_license = "mit"
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["oan_auth_service"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -93,7 +93,10 @@ after_install = "oan_a2c.setup.migrate.after_install"
 
 # Re-assert those custom fields and roles on every migrate so already-provisioned sites
 # stay self-healing when the definitions change.
-after_migrate = "oan_a2c.setup.migrate.after_migrate"
+after_migrate = [
+	"oan_a2c.setup.migrate.after_migrate",
+	"oan_a2c.a2c_marketplace.dashboard_rollup.ensure_built",
+]
 
 # Uninstallation
 # ------------
@@ -204,6 +207,12 @@ scheduler_events = {
 	"hourly": [
 		"oan_a2c.a2c_marketplace.stats_cache.reconcile_all_banks",
 	],
+	# The public dashboard charts read only this snapshot, so this is how fresh they are.
+	"cron": {
+		"*/15 * * * *": [
+			"oan_a2c.a2c_marketplace.dashboard_rollup.refresh",
+		],
+	},
 }
 
 # Testing
@@ -244,7 +253,7 @@ before_tests = "oan_a2c.tests.before_tests"
 
 # Request Events
 # ----------------
-# before_request = ["oan_a2c.utils.before_request"]
+before_request = ["oan_a2c.api.router.ensure_routes_registered"]
 # after_request = ["oan_a2c.utils.after_request"]
 
 # Job Events
@@ -279,7 +288,15 @@ before_tests = "oan_a2c.tests.before_tests"
 # Authentication and authorization
 # --------------------------------
 
-auth_hooks = ["oan_a2c.api.middleware.validate_jwt_request"]
+# JWT validation, login, refresh and password flows live in oan_auth_service.
+# Adds user type and bank binding to its GET /api/v1/auth/me response, and the
+# user type to every access token.
+on_user_profile = ["oan_a2c.api.auth.on_user_profile"]
+on_access_token_claims = ["oan_a2c.api.auth.access_token_claims"]
+
+# Scopes oan_auth_service's /v1/admin/* endpoints (users, roles, permissions) to the roles and
+# doctypes named "A2C" or "A2C <...>". Without it those endpoints answer 400.
+oan_service_prefix = "A2C"
 
 # Automatically update python controller files with type annotations for this app.
 # export_python_type_annotations = True

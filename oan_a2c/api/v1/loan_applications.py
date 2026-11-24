@@ -1,3 +1,4 @@
+import json
 from typing import Literal
 
 import frappe
@@ -6,7 +7,7 @@ from frappe.utils import cint, flt, sanitize_html
 from pydantic import BaseModel, Field, model_validator
 
 from oan_a2c.a2c_marketplace.doctype_schemas import MAX_LOAN_AMOUNT, MAX_QUERY_AMOUNT
-from oan_a2c.a2c_marketplace.permissions import get_user_farmer_profile, is_farmer
+from oan_a2c.a2c_marketplace.permissions import can_see_onboarding_step, get_user_farmer_profile, is_farmer
 from oan_a2c.a2c_marketplace.roles import ADMIN_ROLE, BANK_ADMIN_ROLE, BANK_AGENT_ROLE, DEVELOPMENT_AGENT_ROLE
 from oan_a2c.a2c_marketplace.stages import (
 	SUCCESSFUL_ARCHETYPES,
@@ -121,6 +122,18 @@ class UpdateLoanStepSchema(BaseModel):
 class AssignLoanOfficerSchema(BaseModel):
 	application_id: str = Field(..., min_length=1, max_length=140)
 	loan_officer: str = Field(..., min_length=1, max_length=140)
+
+
+def _require_draft_for_farmer(application_id):
+	"""A farmer may change an application's documents only while it is a draft (status Active, before submit).
+
+	After submission the bank reviews those files, so they must not change under it.
+	Other roles are not limited here: their access is already scoped by bank and DocPerm.
+	"""
+	if is_farmer() and frappe.db.get_value("A2C Loan Application", application_id, "status") != "Active":
+		frappe.throw(
+			_("Documents can only be changed while the application is a draft."), frappe.PermissionError
+		)
 
 
 def _get_app(application_id):
@@ -244,7 +257,6 @@ def _get_consent_details(consent_id: str) -> dict:
 	return res_fields
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetBasicProfileSchema)
 @handle_api_errors
 def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | None = None):
@@ -292,6 +304,12 @@ def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | N
 	if profile_name:
 		frappe.has_permission("A2C Farmer Profile", "read", doc=profile_name, throw=True)
 		profile = frappe.get_doc("A2C Farmer Profile", profile_name)
+		raw_data = profile.get("farmer_data_json")
+		if isinstance(raw_data, str):
+			try:
+				raw_data = json.loads(raw_data)
+			except Exception:
+				pass
 		data.update(
 			{
 				"first_name": profile.first_name,
@@ -301,6 +319,7 @@ def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | N
 				"region": profile.region,
 				"woreda": profile.woreda,
 				"kebele": profile.kebele,
+				"farmer_data": raw_data or {},
 			}
 		)
 		consent_id = profile.consent_id or consent_id
@@ -308,7 +327,10 @@ def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | N
 	if consent_id:
 		consent_doc_data = (
 			frappe.db.get_value(
-				"A2C Consent Request", consent_id, ["status", "otp_verified_at"], as_dict=True
+				"A2C Consent Request",
+				consent_id,
+				["status", "otp_verified_at", "farmer_fayda_id"],
+				as_dict=True,
 			)
 			or {}
 		)
@@ -316,6 +338,7 @@ def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | N
 			"name": consent_id,
 			"status": consent_doc_data.get("status"),
 			"otp_verified": bool(consent_doc_data.get("otp_verified_at")),
+			"farmer_fayda_id": consent_doc_data.get("farmer_fayda_id"),
 		}
 		if include_consent_data:
 			data.update(_get_consent_details(consent_id))
@@ -325,7 +348,6 @@ def get_basic_profile(lead_id: str | None = None, include_consent_data: bool | N
 	return success_response(data=data, message="Basic profile retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(UpdateBasicProfileSchema)
 @handle_api_errors
 def update_basic_profile(
@@ -384,7 +406,6 @@ def update_basic_profile(
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(LoanApplicationIDSchema)
 @handle_api_errors
 def get_full_profile(**kwargs):
@@ -395,6 +416,20 @@ def get_full_profile(**kwargs):
 	frappe.has_permission("A2C Loan Application", "read", doc=application_id, throw=True)
 	doc = _get_app(application_id)
 	status_info = status_payload(doc)
+
+	farmer_id = doc.farmer_id
+	if doc.id_type == "uid" and doc.id_number:
+		farmer_id = doc.id_number
+	elif doc.consent_id:
+		farmer_id = frappe.db.get_value("A2C Consent Request", doc.consent_id, "farmer_fayda_id") or farmer_id
+
+	loan_officer_name = None
+	if doc.loan_officer:
+		loan_officer_name = (
+			frappe.db.get_value("User", doc.loan_officer, "full_name")
+			or frappe.db.get_value("User", {"email": doc.loan_officer}, "full_name")
+			or doc.loan_officer
+		)
 
 	data = {
 		"application_id": doc.name,
@@ -408,7 +443,7 @@ def get_full_profile(**kwargs):
 		"phone_number": doc.phone_number,
 		"id_type": doc.id_type,
 		"id_number": doc.id_number,
-		"farmer_id": doc.farmer_id,
+		"farmer_id": farmer_id,
 		"consent_id": doc.consent_id,
 		"loan_type": _resolve_loan_type(doc),
 		"loan_product": doc.loan_product,
@@ -420,9 +455,10 @@ def get_full_profile(**kwargs):
 		"sequence": status_info["sequence"],
 		"is_terminal": status_info["is_terminal"],
 		"is_successful": status_info["is_successful"],
-		"current_step": cint(doc.current_step),
 		"loan_officer": doc.loan_officer,
+		"loan_officer_name": loan_officer_name,
 		"creation": to_tz_aware_iso(doc.creation),
+		"submitted_at": to_tz_aware_iso(doc.submitted_at) if doc.submitted_at else None,
 		"date_of_birth": str(doc.date_of_birth) if doc.date_of_birth else None,
 		"gender": doc.gender,
 		"marital_status": doc.marital_status,
@@ -444,10 +480,23 @@ def get_full_profile(**kwargs):
 		"certification_photo_url": doc.certification_photo_url,
 	}
 
+	user = frappe.session.user
+	if can_see_onboarding_step(user):
+		data["current_step"] = cint(doc.current_step)
+
+	raw_data = doc.get("farmer_data_json")
+	if not raw_data and doc.farmer_profile:
+		raw_data = frappe.db.get_value("A2C Farmer Profile", doc.farmer_profile, "farmer_data_json")
+	if isinstance(raw_data, str):
+		try:
+			raw_data = json.loads(raw_data)
+		except Exception:
+			pass
+	data["farmer_data"] = raw_data or {}
+
 	return success_response(data=data, message="Full profile retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @handle_api_errors
 def get_loan_summary():
 	frappe.has_permission("A2C Loan Application", "read", throw=True)
@@ -456,7 +505,7 @@ def get_loan_summary():
 	meta = frappe.get_meta("A2C Loan Application")
 	has_loan_officer = meta.has_field("loan_officer")
 
-	fields = ["status", "stage_label", {"COUNT": "*"}]
+	fields = ["status", "stage_label", {"COUNT": "*", "as": "count"}]
 	group_by = "status, stage_label"
 	if has_loan_officer:
 		fields.insert(2, "loan_officer")
@@ -486,7 +535,7 @@ def get_loan_summary():
 	unassigned = 0
 
 	for row in counts:
-		count = row.get("COUNT(*)", 0)
+		count = row.get("count", 0)
 		summary["total"] += count
 
 		# If the bank has defined a stage, use it, else fallback to the archetype status
@@ -512,7 +561,6 @@ def get_loan_summary():
 	return success_response(data=summary, message="Loan summary retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @handle_api_errors
 def get_loan_metadata():
 	"""
@@ -520,18 +568,22 @@ def get_loan_metadata():
 	"""
 	frappe.has_permission("A2C Loan Application", "read", throw=True)
 
-	# "Active" is the pre-submission archetype and has no stage behind it, so it is
-	# prepended by hand; everything after it is the caller's own pipeline.
-	status_list = [
-		{
-			"status": "Active",
-			"stage_id": None,
-			"sequence": None,
-			"is_terminal": False,
-			"is_successful": False,
-		}
-	]
-	for stage in get_visible_stages():
+	user = frappe.session.user
+	status_list = []
+	if can_see_onboarding_step(user):
+		# "Active" is the pre-submission archetype and has no stage behind it, so it is
+		# prepended for bank-unbound callers and farmers; bank users only see post-submission stages.
+		status_list.append(
+			{
+				"status": "Active",
+				"stage_id": None,
+				"sequence": None,
+				"is_terminal": False,
+				"is_successful": False,
+			}
+		)
+
+	for stage in get_visible_stages(user):
 		status_list.append(
 			{
 				"status": stage["label"],
@@ -545,7 +597,6 @@ def get_loan_metadata():
 	return success_response(data={"statuses": status_list}, message="Loan metadata retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetAllLoansSchema)
 @handle_api_errors
 def get_all_loans(**kwargs):
@@ -651,35 +702,43 @@ def get_all_loans(**kwargs):
 		"A2C Loan Application",
 		filters=filters,
 		or_filters=or_filters or None,
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 		ignore_permissions=False,
 	)
-	total_records = count_res[0].get("COUNT(*)") if count_res else 0
+	total_records = count_res[0].get("count") if count_res else 0
+
+	user = frappe.session.user
+	can_see_step = can_see_onboarding_step(user)
+
+	fields = [
+		"name as application_id",
+		"status",
+		"stage_id",
+		"stage_label",
+		"lead_id",
+		"first_name",
+		"last_name",
+		"loan_amount",
+		"loan_type",
+		"loan_product",
+		"loan_product_name",
+		"bank",
+		"region",
+		"woreda",
+		"kebele",
+		"phone_number",
+		"creation",
+		"submitted_at",
+	]
+	if can_see_step:
+		fields.append("current_step as step")
 
 	records = frappe.get_list(
 		"A2C Loan Application",
 		filters=filters,
 		or_filters=or_filters or None,
-		fields=[
-			"name as application_id",
-			"status",
-			"stage_id",
-			"stage_label",
-			"current_step as step",
-			"lead_id",
-			"first_name",
-			"last_name",
-			"loan_amount",
-			"loan_type",
-			"loan_product",
-			"loan_product_name",
-			"bank",
-			"region",
-			"woreda",
-			"kebele",
-			"phone_number",
-			"creation",
-		],
+		fields=fields,
 		order_by=order_by,
 		limit_start=offset,
 		page_length=page_size,
@@ -690,8 +749,10 @@ def get_all_loans(**kwargs):
 	_batch_resolve_loan_types(records)
 	for r in records:
 		r["loan_amount"] = float(r["loan_amount"]) if r.get("loan_amount") else 0.0
-		r["step"] = cint(r.get("step"))
+		if can_see_step:
+			r["step"] = cint(r.get("step"))
 		r["creation"] = to_tz_aware_iso(r["creation"])
+		r["submitted_at"] = to_tz_aware_iso(r["submitted_at"]) if r.get("submitted_at") else None
 
 	total_pages = -(-total_records // page_size)
 	has_next = offset + page_size < total_records
@@ -709,7 +770,6 @@ def get_all_loans(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(LoanApplicationIDSchema)
 @handle_api_errors
 def upload_supporting_documents(**kwargs):
@@ -719,6 +779,7 @@ def upload_supporting_documents(**kwargs):
 	application_id = kwargs.get("application_id")
 
 	frappe.has_permission("A2C Loan Application", "write", doc=application_id, throw=True)
+	_require_draft_for_farmer(application_id)
 	doc = _get_app(application_id)
 
 	if not frappe.request.files:
@@ -807,7 +868,6 @@ def upload_supporting_documents(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(LoanApplicationIDSchema)
 @handle_api_errors
 def get_supporting_documents(**kwargs):
@@ -832,7 +892,6 @@ def get_supporting_documents(**kwargs):
 	return success_response(data=files, message="Supporting documents retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(DownloadSupportingDocumentSchema)
 @handle_api_errors
 def download_supporting_document(**kwargs):
@@ -858,13 +917,14 @@ def download_supporting_document(**kwargs):
 		frappe.throw(_("File not found"), frappe.DoesNotExistError)
 
 	frappe.local.response.filename = file_doc.file_name
-	frappe.local.response.filecontent = file_doc.get_content()
+	# Raw bytes: pass empty encodings to bypass text decoding in File.get_content(),
+	# which corrupts binary files once re-encoded for the response.
+	frappe.local.response.filecontent = file_doc.get_content(encodings=())
 	frappe.local.response.type = "download"
 	if view:
 		frappe.local.response.display_content_as = "inline"
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(DeleteSupportingDocumentSchema)
 @handle_api_errors
 def delete_supporting_document(**kwargs):
@@ -875,6 +935,7 @@ def delete_supporting_document(**kwargs):
 	file_id = kwargs.get("file_id")
 
 	frappe.has_permission("A2C Loan Application", "write", doc=application_id, throw=True)
+	_require_draft_for_farmer(application_id)
 	_get_app(application_id)
 
 	if not frappe.db.exists(
@@ -902,7 +963,6 @@ def delete_supporting_document(**kwargs):
 	return success_response(message=_("Document deleted successfully."))
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(LeadIDSchema)
 @handle_api_errors
 def create_loan_application(**kwargs):
@@ -914,15 +974,13 @@ def create_loan_application(**kwargs):
 	frappe.has_permission("A2C Loan Application", "create", throw=True)
 	lead_doc = _get_lead(lead_id)
 
-	# Acquire a database-level transaction row/gap lock via raw SQL FOR UPDATE to prevent TOCTOU
+	# Acquire a database-level transaction row/gap lock (get_value with for_update) to prevent TOCTOU
 	# race conditions during concurrent API requests.
 	# Alternative unique constraints cannot be enforced on the database layer because some values
 	# (such as lead_id) are not guaranteed to be unique under database schemas without custom migration scripts.
 	# Lock-only query (returns nothing to the caller); the permission-checked read
 	# is the frappe.get_list below. Locking across banks is safe. bank-scope-exempt
-	frappe.db.sql(
-		"SELECT name FROM `tabA2C Loan Application` WHERE lead_id = %s FOR UPDATE", (lead_id,)
-	)  # bank-scope-exempt
+	frappe.db.get_value("A2C Loan Application", {"lead_id": lead_id}, "name", for_update=True)
 	existing = frappe.get_list(
 		"A2C Loan Application",
 		filters={"lead_id": lead_id},
@@ -989,6 +1047,10 @@ def create_loan_application(**kwargs):
 		if field.fieldname not in fields_to_ignore and loan_app.meta.has_field(field.fieldname):
 			loan_app.set(field.fieldname, farmer_profile.get(field.fieldname))
 
+	# The registry may hold no phone for the farmer; the agent captured one on the lead.
+	if not loan_app.phone_number:
+		loan_app.phone_number = lead_doc.get("phone_number")
+
 	loan_app.loan_type = credit_info.loan_type
 	loan_app.loan_amount = flt(credit_info.loan_amount)
 	loan_app.requested_amount = flt(credit_info.loan_amount)
@@ -1037,7 +1099,6 @@ class UpdateLoanStatusSchema(BaseModel):
 	# Validation will happen in the endpoint using resolve_bank_stage.
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(UpdateLoanStatusSchema)
 @handle_api_errors
 @require_role([ADMIN_ROLE, BANK_ADMIN_ROLE, BANK_AGENT_ROLE, DEVELOPMENT_AGENT_ROLE, "System Manager"])
@@ -1124,12 +1185,15 @@ def update_loan_status(**kwargs):
 	audit_event.event_type = "Status Changed"
 	audit_event.event_title = "Status Updated"
 	audit_event.event_description = description
-	audit_event.insert()
+	# ignore_permissions=True: append-only audit trail, same as upload/delete_supporting_document.
+	# Bank Admin/Agent have create=0 on the audit doctype, so a plain insert() throws
+	# PermissionError after the status already changed -- breaking the endpoint for the
+	# very roles it targets and leaving no audit record.
+	audit_event.insert(ignore_permissions=True)
 
 	return success_response(message=_("Loan status updated to {0}.").format(resolved["stage_label"]))
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(UpdateLoanStepSchema)
 @handle_api_errors
 def update_loan_step(**kwargs):
@@ -1150,7 +1214,6 @@ def update_loan_step(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False, methods=["POST"])
 @validate_request(AssignLoanOfficerSchema)
 @handle_api_errors
 def assign_loan_officer(**kwargs):

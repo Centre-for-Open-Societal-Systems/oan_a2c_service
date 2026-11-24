@@ -1,5 +1,5 @@
 """
-- Enforces JWT session validation via whitelist allow_guest=False.
+- Enforces JWT session validation.
 - Explicitly executes frappe.has_permission.
 - Leverages frappe.get_list() to ensure Frappe's RBAC and User Permissions (multi-tenant
   data isolation) are dynamically applied at the database query layer.
@@ -13,7 +13,7 @@ from frappe import _
 from frappe.utils import sanitize_html, strip_html
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from oan_a2c.a2c_marketplace.roles import BANK_AGENT_ROLE, DEVELOPMENT_AGENT_ROLE
+from oan_a2c.a2c_marketplace.roles import DEVELOPMENT_AGENT_ROLE
 from oan_a2c.api.utils import (
 	RequiredPhone,
 	SafeDate,
@@ -131,7 +131,6 @@ class UpdateVisitScheduleStatusSchema(BaseModel):
 	status: Literal["Scheduled", "Completed", "Cancelled", "Missed"]
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetLeadsSchema)
 @handle_api_errors
 def get_leads(**kwargs):
@@ -277,9 +276,13 @@ def get_leads(**kwargs):
 
 	# 5. Fetch Total Record Count (Respecting RBAC and User Permissions via get_list counted select)
 	count_res = frappe.get_list(
-		"A2C Lead", filters=filters, or_filters=or_filters or None, fields=[{"COUNT": "*"}]
+		"A2C Lead",
+		filters=filters,
+		or_filters=or_filters or None,
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 	)
-	total_count = count_res[0].get("COUNT(*)") if count_res else 0
+	total_count = count_res[0].get("count") if count_res else 0
 
 	# 6. Fetch Paginated Records
 	leads = frappe.get_list(
@@ -348,6 +351,21 @@ def get_leads(**kwargs):
 			lead["visit_date"] = visit.get("visit_date") if visit else None
 			lead["schedule_status"] = visit.get("status") if visit else None
 
+		# When the lead's status last changed: the newest "Status Changed" audit event, or the
+		# creation time when it has never changed (its first status was set on creation).
+		# One query for the page, like credit info and visits above.
+		latest_status_change = {}
+		for event in frappe.get_all(
+			"A2C Lead Audit Event",
+			filters={"lead": ["in", lead_names], "event_type": "Status Changed"},
+			fields=["lead", "creation"],
+			order_by="creation desc",
+		):
+			latest_status_change.setdefault(event["lead"], event["creation"])
+
+		for lead in leads:
+			lead["status_changed_at"] = latest_status_change.get(lead["name"]) or lead["creation"]
+
 		# A2C Lead itself stores no location -- it lives on the linked farmer profile,
 		# which only exists once the lead has been through basic profiling. One batched
 		# query for the page (same idiom as credit info and visits above); leads with no
@@ -383,7 +401,6 @@ def get_leads(**kwargs):
 	return success_response(data=leads, message="Leads retrieved successfully", pagination=pagination)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(CreateLeadSchema)
 @handle_api_errors
 def create_lead(**kwargs):
@@ -391,7 +408,7 @@ def create_lead(**kwargs):
 	Natively creates a new A2C Lead document from the A2C application interface.
 
 	Security Specs:
-	  - Enforces JWT session validation via whitelist allow_guest=False.
+	  - Enforces JWT session validation.
 	  - Validates role creation permissions natively.
 	  - Validates and sanitizes all input strings, including strict email formatting checks.
 	"""
@@ -404,14 +421,14 @@ def create_lead(**kwargs):
 	lead_source = kwargs.get("lead_source", "Agent Entry")
 	external_id = kwargs.get("external_id")
 
-	# Acquire a database-level transaction row/gap lock via raw SQL FOR UPDATE to prevent TOCTOU
+	# Acquire a database-level transaction row/gap lock (get_value with for_update) to prevent TOCTOU
 	# race conditions during concurrent API requests.
 	# Alternative unique constraints cannot be enforced on the database layer because some values
 	# (such as external_id) are optional or may have blank/empty string values, which are not
 	# guaranteed to be unique under standard database unique index constraints (where empty strings
 	# trigger duplicate key errors in MariaDB/MySQL).
 	if phone_number:
-		frappe.db.sql("SELECT name FROM `tabA2C Lead` WHERE phone_number = %s FOR UPDATE", (phone_number,))
+		frappe.db.get_value("A2C Lead", {"phone_number": phone_number}, "name", for_update=True)
 		if frappe.db.exists("A2C Lead", {"phone_number": phone_number}):
 			frappe.throw(
 				_("Lead with phone number {0} already exists").format(phone_number),
@@ -419,7 +436,7 @@ def create_lead(**kwargs):
 			)
 
 	if external_id:
-		frappe.db.sql("SELECT name FROM `tabA2C Lead` WHERE external_id = %s FOR UPDATE", (external_id,))
+		frappe.db.get_value("A2C Lead", {"external_id": external_id}, "name", for_update=True)
 		if frappe.db.exists("A2C Lead", {"external_id": external_id}):
 			frappe.throw(
 				_("Lead with external ID {0} already exists").format(external_id), frappe.DuplicateEntryError
@@ -464,7 +481,6 @@ def create_lead(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @handle_api_errors
 def get_lead_summary():
 	"""
@@ -481,12 +497,12 @@ def get_lead_summary():
 	grouped = frappe.get_list(
 		"A2C Lead",
 		filters={"status": ["in", list(allowed_statuses)]},
-		fields=["status", {"COUNT": "*"}],
+		fields=["status", {"COUNT": "*", "as": "count"}],
 		group_by="status",
 	)
 	for row in grouped:
 		st = row.get("status")
-		cnt = row.get("COUNT(*)", 0)
+		cnt = row.get("count", 0)
 		if st in counts_by_status:
 			counts_by_status[st] = cnt
 			total_count += cnt
@@ -497,16 +513,18 @@ def get_lead_summary():
 	my_res = frappe.get_list(
 		"A2C Lead",
 		filters={"status": ["in", list(allowed_statuses)], "assigned_to": user},
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 	)
-	my_count = my_res[0].get("COUNT(*)") if my_res else 0
+	my_count = my_res[0].get("count") if my_res else 0
 
 	unassigned_res = frappe.get_list(
 		"A2C Lead",
 		filters={"status": ["in", list(allowed_statuses)], "assigned_to": ["in", ["", None]]},
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 	)
-	unassigned_count = unassigned_res[0].get("COUNT(*)") if unassigned_res else 0
+	unassigned_count = unassigned_res[0].get("count") if unassigned_res else 0
 
 	return success_response(
 		data={
@@ -518,7 +536,6 @@ def get_lead_summary():
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @handle_api_errors
 def get_lead_metadata():
 	"""
@@ -549,7 +566,6 @@ def get_lead_metadata():
 	return success_response(data=data, message="Lead metadata retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(AddLeadCreditInfoSchema)
 @handle_api_errors
 def add_lead_credit_info(**kwargs):
@@ -557,7 +573,7 @@ def add_lead_credit_info(**kwargs):
 	Creates a new A2C Credit Information record associated with a lead.
 
 	Security & Validation:
-	  - Enforces JWT session validation via whitelist allow_guest=False.
+	  - Enforces JWT session validation.
 	  - Checks user has 'write' permission on the lead and 'create' permission on A2C Credit Information.
 	  - Validates and sanitizes parameters.
 	"""
@@ -648,7 +664,6 @@ def add_lead_credit_info(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(LeadIDSchema)
 @handle_api_errors
 def get_lead_credit_infos(**kwargs):
@@ -671,7 +686,6 @@ def get_lead_credit_infos(**kwargs):
 	return success_response(data=results, message="Lead credit information retrieved successfully")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(UpdateLeadStatusSchema)
 @handle_api_errors
 def update_lead_status(**kwargs):
@@ -721,12 +735,11 @@ def update_lead_status(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetAssignableUsersSchema)
 @handle_api_errors
 def get_assignable_users(**kwargs):
 	"""
-	Retrieves potential lead assignees: active Users having roles 'Development Agent' or 'Bank Agent'.
+	Retrieves potential lead assignees: active Users having the 'Development Agent' role.
 	Optionally filters by search_query (full_name, name, or email) and supports pagination.
 	"""
 	frappe.has_permission("A2C Lead", "read", throw=True)
@@ -735,12 +748,12 @@ def get_assignable_users(**kwargs):
 	start_idx = kwargs.get("start") or 0
 	page_len = kwargs.get("page_length") or 20
 
-	# Fetch Users linked to either 'Development Agent' or 'Bank Agent' role.
+	# Fetch Users linked to the 'Development Agent' role.
 	# ignore_permissions=True is required here because standard users (like Bank Agent)
 	# do not have permission to read/query the Has Role doctype.
 	role_users = frappe.get_list(
 		"Has Role",
-		filters={"role": ["in", [DEVELOPMENT_AGENT_ROLE, BANK_AGENT_ROLE]]},
+		filters={"role": DEVELOPMENT_AGENT_ROLE},
 		pluck="parent",
 		ignore_permissions=True,
 	)
@@ -789,10 +802,11 @@ def get_assignable_users(**kwargs):
 		"User",
 		filters=user_filters,
 		or_filters=or_filters or None,
-		fields=[{"COUNT": "*"}],
+		fields=[{"COUNT": "*", "as": "count"}],
+		order_by="",
 		ignore_permissions=True,
 	)
-	total_count = count_res[0].get("COUNT(*)") if count_res else 0
+	total_count = count_res[0].get("count") if count_res else 0
 
 	# Query Users.
 	# ignore_permissions=True is required because standard users lack permissions to query the system User table.
@@ -826,7 +840,7 @@ def get_assignable_users(**kwargs):
 
 	has_next = (start_idx + page_len) < total_count
 	# Note: This pagination shape ({start, page_length, total_count, has_next}) is intentional
-	# and conforms to the API specification / contract established in docs/api-flow-backend.md.
+	# and conforms to the API contract in openapi/openapi_v1.yaml.
 	pagination = {
 		"start": start_idx,
 		"page_length": page_len,
@@ -839,7 +853,6 @@ def get_assignable_users(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(AssignLeadSchema)
 @handle_api_errors
 def assign_lead(**kwargs):
@@ -898,7 +911,6 @@ def assign_lead(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(AddLeadCommentSchema)
 @handle_api_errors
 def add_lead_comment(**kwargs):
@@ -924,7 +936,6 @@ def add_lead_comment(**kwargs):
 	return success_response(data={"comment_id": audit_event.name}, message="Comment added successfully.")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetLeadTimelineSchema)
 @handle_api_errors
 def get_lead_timeline(**kwargs):
@@ -961,7 +972,6 @@ def get_lead_timeline(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(LeadIDSchema)
 @handle_api_errors
 def get_lead_call_logs(**kwargs):
@@ -1008,13 +1018,12 @@ def get_lead_call_logs(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(ScheduleVisitSchema)
 @handle_api_errors
 def schedule_visit(**kwargs):
 	"""
 	Schedules a new visit for an A2C Lead.
-	- Enforces JWT session validation via allow_guest=False.
+	- Enforces JWT session validation.
 	- Enforces user write permissions on the Lead and create permissions on the Visit Schedule.
 	- Inserts a system Comment on the lead's timeline.
 	"""
@@ -1063,7 +1072,6 @@ def schedule_visit(**kwargs):
 	return success_response(data={"schedule_id": schedule.name}, message="Visit scheduled successfully.")
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(GetVisitSchedulesSchema)
 @handle_api_errors
 def get_visit_schedules(**kwargs):
@@ -1097,8 +1105,10 @@ def get_visit_schedules(**kwargs):
 	elif end_date:
 		filters.append(["visit_date", "<=", end_date])
 
-	count_res = frappe.get_list("A2C Visit Schedule", filters=filters, fields=[{"COUNT": "*"}])
-	total_count = count_res[0].get("COUNT(*)") if count_res else 0
+	count_res = frappe.get_list(
+		"A2C Visit Schedule", filters=filters, fields=[{"COUNT": "*", "as": "count"}], order_by=""
+	)
+	total_count = count_res[0].get("count") if count_res else 0
 
 	schedules = frappe.get_list(
 		"A2C Visit Schedule",
@@ -1138,7 +1148,6 @@ def get_visit_schedules(**kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=False)
 @validate_request(UpdateVisitScheduleStatusSchema)
 @handle_api_errors
 def update_visit_schedule_status(**kwargs):
