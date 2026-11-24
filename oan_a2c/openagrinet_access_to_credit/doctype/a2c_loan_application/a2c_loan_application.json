@@ -216,8 +216,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone Number",
-   "options": "Phone",
-   "reqd": 1
+   "options": "Phone"
   },
   {
    "fieldname": "email",
