@@ -7,31 +7,17 @@
 //                   namespace A2C_NAMESPACE, on the oan_dev k3s node, from a VPN deploy agent)
 //                   + ci/deploy-gateway.sh (APISIX routes, chart apisix/k8s, only when the spec,
 //                   apisix/ or the gateway values changed; same kubeconfig as the helm deploy)
-//    staging_aws -> build + push + SSH docker-compose deploy to a SEPARATE stack on
-//                   the SAME box (BACKEND_IP:${STAGING_APP_DIR}, compose project
-//                   oan_a2c_staging).
-//    staging_ati -> build + push + ci/update-kustomize-ati.sh
-//                   (GitOps: bump oan-kustomize `staging` overlay; ArgoCD on node 41 syncs)
+//    staging     -> promotes what develop built from this same source tree: ci/package_chart.py promote tags the
+//                   develop image <version>-staging.<build> and repackages its chart, a seed image is built
+//                   from openg2p-data, then ci/deploy-helm-dev.sh (DEPLOY_ENV=staging, helm/environments/staging)
+//                   and ci/deploy-gateway.sh install them on the QA cluster (qa.oanstaging.com). The chart is
+//                   published to repository/staging of oan-helm. Nothing is rebuilt.
 //
-//  develop + staging_aws were migrated off the legacy `oan-a2c` repo onto `eoan/oan-a2c-service/a2c-service`
-//  (staging_ati was already there). Both deploy scripts rewrite the WHOLE ECR_IMAGE
-//  line in the box `.env`, so the first build after this change repoints the stack
-//  automatically — no manual .env edit needed.
-//  `main` is handled separately by Jenkinsfile.main (retained during validation).
+//  Tags:  <__version__>-<branch>.<build>, e.g. 0.0.1-develop.57 / 0.0.1-staging.58 (= chart version)
 //
-//  NOTE (staging_aws prereq): ${STAGING_APP_DIR} must be provisioned on BACKEND_IP
-//  before the first staging_aws build — a copy of /opt/oan_a2c with its own .env
-//  (ECR_IMAGE on eoan/oan-a2c-service/a2c-service) and DISTINCT host ports (dev uses frontend 8080 and
-//  kong 8000-8001; give staging e.g. 8090 and 8010-8011) plus its own site, so the
-//  two stacks don't collide. Same box, different image tag + different compose app.
-//
-//  Tags:  develop: <__version__>-develop.<build>, e.g. 0.0.1-develop.57 (= chart version)
-//         staging_*: <branch>-<build>      immutable, pinned by oan-kustomize / deploy-ec2.sh
-//         <branch>-latest                  moving alias (convenience)
-//
-//  Agent needs: docker(+buildx), aws cli v2, git, kustomize.
-//  Credentials: AWS_ACCOUNT_ID (string), backend-ssh-key (ssh), oan-dev-kubeconfig (file, oan-service-helm cluster/),
-//               oan-deployer (GitHub App).
+//  Agent needs: docker(+buildx), aws cli v2, git.
+//  Credentials: AWS_ACCOUNT_ID (string), oan-dev-kubeconfig (file, oan-service-helm cluster/),
+//               oan-qa-kubeconfig (file, the jenkins-qa-deployer ServiceAccount of oan-helm docs/qa-cluster.md; staging),
 //  NOTE: `aws ecr get-login-password` uses the agent's ambient AWS identity, which
 //        must have ECR push on `eoan/oan-a2c-service/a2c-service`.
 // =============================================================================
@@ -49,8 +35,6 @@ pipeline {
     AWS_REGION      = 'ap-south-1'
     FRAPPE_BRANCH   = 'version-16'
     FRAPPE_PATH     = 'https://github.com/frappe/frappe'
-    BACKEND_IP      = '10.0.2.100'
-    STAGING_APP_DIR = '/opt/oan_a2c_staging'   // staging_aws stack (separate from /opt/oan_a2c)
     A2C_NAMESPACE   = 'a2c'
   }
 
@@ -60,24 +44,21 @@ pipeline {
         script {
           // One ECR repo for every branch: eoan/oan-a2c-service/a2c-service (must exist in ECR).
           // develop tag = chart version = <__version__>-develop.<build_number>, e.g. 0.0.1-develop.57
-          // (ci/package_chart.py version). staging_aws / staging_ati keep <prefix>-<build>.
+          // (ci/package_chart.py version); staging: <__version__>-staging.<build>.
           env.ECR_REPO      = 'eoan/oan-a2c-service/a2c-service'
           env.ECR_SEED_REPO = 'eoan/oan-a2c-service/a2c-seed'
-          def tagPrefix     = (env.BRANCH_NAME == 'staging_ati') ? 'staging-ati'
-                            : (env.BRANCH_NAME == 'staging_aws') ? 'staging-aws'
-                            : env.BRANCH_NAME
-          env.IMMUTABLE_TAG = "${tagPrefix}-${env.BUILD_NUMBER}"
-          if (env.BRANCH_NAME == 'develop') {
+          env.IMMUTABLE_TAG = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+          if (env.BRANCH_NAME == 'develop' || env.BRANCH_NAME == 'staging') {
             env.IMMUTABLE_TAG = sh(returnStdout: true, script: 'python3 ci/package_chart.py version').trim()
           }
-          env.MOVING_TAG    = "${tagPrefix}-latest"
+          env.MOVING_TAG    = "${env.BRANCH_NAME}-latest"
           echo "branch=${env.BRANCH_NAME}  repo=${env.ECR_REPO}  seed_repo=${env.ECR_SEED_REPO}  tag=${env.IMMUTABLE_TAG}"
         }
       }
     }
 
     stage('Build image') {
-      when { anyOf { branch 'develop'; branch 'staging_aws'; branch 'staging_ati' } }
+      when { branch 'develop' }
       steps {
         withCredentials([string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID')]) {
           sh '''#!/usr/bin/env bash
@@ -102,11 +83,6 @@ pipeline {
             git clone --depth 1 https://github.com/frappe/frappe_docker.git frappe_docker
 
             AUTH_BRANCH="develop"
-            if [ "${BRANCH_NAME}" = "staging_aws" ] || [ "${BRANCH_NAME}" = "staging_ati" ]; then
-              AUTH_BRANCH="staging"
-            elif [ "${BRANCH_NAME}" = "main" ]; then
-              AUTH_BRANCH="main"
-            fi
 
             printf '[{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_auth_service.git","branch":"%s"},{"url":"https://github.com/Centre-for-Open-Societal-Systems/oan_a2c_service.git","branch":"%s"}]' \
               "${AUTH_BRANCH}" "${BRANCH_NAME}" > /tmp/apps.json
@@ -127,7 +103,7 @@ pipeline {
     }
 
     stage('Push to ECR') {
-      when { anyOf { branch 'develop'; branch 'staging_aws'; branch 'staging_ati' } }
+      when { branch 'develop' }
       steps {
         withCredentials([string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID')]) {
           sh '''#!/usr/bin/env bash
@@ -162,12 +138,41 @@ pipeline {
       }
     }
 
+    // staging: the seed is the one image built here. It comes from openg2p-data develop, like develop's, and carries the
+    // staging version so the chart's seed tag (ci/deploy-helm-dev.sh sets it) finds it.
+    stage('Seed image (staging)') {
+      when { branch 'staging' }
+      steps {
+        withCredentials([string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID')]) {
+          sh '''#!/usr/bin/env bash
+            set -euo pipefail
+            REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            SEED_IMAGE_URI="${REGISTRY}/${ECR_SEED_REPO}"
+            OPENG2P_DATA_REF=$(git ls-remote https://github.com/Centre-for-Open-Societal-Systems/openg2p-data.git refs/heads/develop | cut -f1)
+            test -n "${OPENG2P_DATA_REF}" || { echo "Could not resolve openg2p-data develop" >&2; exit 1; }
+            echo "openg2p-data develop is ${OPENG2P_DATA_REF}"
+            DOCKER_BUILDKIT=1 docker buildx build \
+              --build-arg OPENG2P_DATA_REF=${OPENG2P_DATA_REF} \
+              --tag ${SEED_IMAGE_URI}:${IMMUTABLE_TAG} \
+              --load ci/seed
+            aws ecr get-login-password --region ${AWS_REGION} \
+              | docker login --username AWS --password-stdin "${REGISTRY}"
+            aws ecr describe-repositories --region ${AWS_REGION} --repository-names "${ECR_SEED_REPO}" >/dev/null 2>&1 \
+              || aws ecr create-repository --region ${AWS_REGION} --repository-name "${ECR_SEED_REPO}" >/dev/null
+            docker push ${SEED_IMAGE_URI}:${IMMUTABLE_TAG}
+            docker rmi ${SEED_IMAGE_URI}:${IMMUTABLE_TAG} || true
+          '''
+        }
+      }
+    }
+
     // Flow (develop): Resolve (version) -> Build image -> Push to ECR -> Package chart -> deploy -> Publish chart.
     // helm/oan-a2c-service is zipped with this build's image before the deploy; the deploy uses the
     // same version tag, and the same archive is published to oan-helm afterwards.
     // ---------------------- Helm chart package (same name as the image) ----------------------
+    // staging: `promote` instead of `package`: the chart develop built from this source tree, its image tagged for staging.
     stage('Package chart') {
-      when { branch 'develop' }
+      when { anyOf { branch 'develop'; branch 'staging' } }
       steps {
         withCredentials([string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID')]) {
           script {
@@ -176,7 +181,7 @@ pipeline {
             env.COMMIT_SUBJECT = sh(returnStdout: true, script: 'git log -1 --pretty=%s').trim()
             env.IMAGE_REPOSITORY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
           }
-          sh 'python3 ci/package_chart.py package'
+          sh "python3 ci/package_chart.py ${env.BRANCH_NAME == 'staging' ? 'promote' : 'package'}"
         }
         // The deploy stages run on the VPN deploy agent, which gets the archive from here.
         stash name: 'built-chart', includes: 'built-chart/**'
@@ -188,12 +193,15 @@ pipeline {
     stage('Package gateway chart') {
       when {
         beforeAgent true
-        allOf {
-          branch 'develop'
-          anyOf {
-            changeset 'apisix/**'
-            changeset 'openapi/**'
-            changeset 'helm/environments/dev/oan-a2c-gateway.yaml'
+        anyOf {
+          branch 'staging'
+          allOf {
+            branch 'develop'
+            anyOf {
+              changeset 'apisix/**'
+              changeset 'openapi/**'
+              changeset 'helm/environments/dev/oan-a2c-gateway.yaml'
+            }
           }
         }
       }
@@ -246,175 +254,40 @@ pipeline {
       }
     }
 
-    // staging_aws -> a SEPARATE docker-compose stack on the SAME backend box.
-    // Same image build as develop (layered Containerfile bakes assets), pushed to
-    // a2c-service:staging-aws-<build>. Deploys into ${STAGING_APP_DIR} (compose project
-    // oan_a2c_staging) so it coexists with develop's /opt/oan_a2c stack — provided
-    // that dir is pre-provisioned with its own .env + DISTINCT host ports (see header).
-    // Assets are baked into the image and symlinked by the entrypoint, so we do NOT
-    // rm sites/assets or `bench build` here — doing so 404s /assets (see deploy-ec2.sh).
-    stage('staging_aws → AWS backend (separate stack)') {
-      when { branch 'staging_aws' }
+    // staging -> Helm release `a2c` on the QA cluster from the promoted archive, then its APISIX routes
+    // (every staging build: the first installs them, and the routes chart is repackaged with each one).
+    stage('staging → QA cluster (helm)') {
+      when { beforeAgent true; branch 'staging' }
+      agent { label 'oan-ci-deploy' }   // VPN agent with helm and kubectl; must reach the QA API
+      options { timeout(time: 45, unit: 'MINUTES') }
       steps {
-        withCredentials([
-          string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID'),
-          sshUserPrivateKey(credentialsId: 'backend-ssh-key',
-                            keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-          string(credentialsId: 'secret_key_develop', variable: 'SECRET_KEY'),
-          string(credentialsId: 'jwt_secrets_develop', variable: 'JWT_SECRETS')
-        ]) {
-          sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-            # JWT_SECRETS is interpolated inside single quotes in the heredoc below, so a single
-            # quote in the value would break out of them and corrupt the command (same guard as deploy-ec2.sh).
-            case "${JWT_SECRETS}" in
-              *"'"*) echo "JWT_SECRETS must not contain a single quote" >&2; exit 1 ;;
-            esac
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${SSH_USER}@${BACKEND_IP}" << SSHEOF
-              set -e
-
-              # Run the whole remote body as a brace group with stdin from /dev/null. This script
-              # reaches the remote shell on STDIN (the <<SSHEOF heredoc); the first
-              # 'docker compose exec -T ...' below would otherwise DRAIN the rest of the heredoc as
-              # its own stdin, so OpenG2P config, secrets, migrate, health check and the asset
-              # cache-bust would silently never run and the deploy would still exit 0 -- exactly what
-              # the develop-30 / staging-aws-7 logs showed (they stop right after "OpenG2P config").
-              # The shell parses the entire { ... } before executing, so the script is fully read off
-              # stdin first; the '< /dev/null' then applies to every exec inside.
-              {
-              cd ${STAGING_APP_DIR}
-
-              echo "=== ECR login ==="
-              aws ecr get-login-password --region ${AWS_REGION} \
-                | docker login --username AWS --password-stdin ${REGISTRY}
-
-              echo "=== Point .env at ${ECR_REPO}:${IMMUTABLE_TAG} (rewrites whole line) ==="
-              sed -i "s|^ECR_IMAGE=.*|ECR_IMAGE=${REGISTRY}/${ECR_REPO}:${IMMUTABLE_TAG}|" .env
-
-              echo "=== Pull + recreate frappe services ==="
-              docker compose pull
-              docker compose up -d --no-deps --force-recreate \
-                backend frontend websocket queue-short queue-long scheduler
-              sleep 20
-
-              # OpenG2P integration config — reuse develop's values (non-secret literals,
-              # same as ci/deploy-ec2.sh). Set globally (-g -> common_site_config.json), like dev.
-              echo "=== OpenG2P config (reuse dev's values) ==="
-              docker compose exec -T backend bench set-config -g openg2p_base_url "https://registry.oanstaging.com/"
-              docker compose exec -T backend bench set-config -g openg2p_username "portal_agent"
-              docker compose exec -T backend bench set-config -g openg2p_password "portal_agent"
-              docker compose exec -T backend bench set-config -g openg2p_db "socialregistry_staging"
-
-              # App secrets — reuse develop's Jenkins credentials (staging shares dev's signing
-              # keys). \${SECRET_KEY}/\${JWT_SECRETS} expand on the AGENT into this heredoc, which is
-              # exactly why they must come from injected credentials. encryption_key is deliberately
-              # NOT set: create-site generated a stable one for this stack, and overwriting it would
-              # make already-encrypted data undecryptable (the latent bug deploy-ec2.sh warns about).
-              # Best-effort: now that the deploy tail actually runs, a bad secret must NOT abort
-              # the deploy before migrate + the asset cache-bust. 'set-config ... --parse' does
-              # ast.literal_eval and dies ("invalid decimal literal") unless JWT_SECRETS is a real
-              # Python literal like {"v1": "..."} -- so each is non-fatal and warns. Fix the Jenkins
-              # credential if a WARN appears in the build log.
-              echo "=== App secrets (secret_key, jwt_secrets, jwt_self_registerable_roles) ==="
-              docker compose exec -T backend bench set-config -g secret_key "${SECRET_KEY}" || echo "WARN: secret_key set-config failed (continuing)"
-              docker compose exec -T backend bench --site mysite.localhost set-config jwt_secrets '${JWT_SECRETS}' --parse || echo "WARN: jwt_secrets set-config failed -- JWT_SECRETS not a valid literal? (continuing)"
-              docker compose exec -T backend bench --site mysite.localhost set-config jwt_current_kid "v1" || echo "WARN: jwt_current_kid set-config failed (continuing)"
-              docker compose exec -T backend bench --site mysite.localhost set-config jwt_self_registerable_roles '["A2C Bank Admin", "A2C Farmer"]' --parse || echo "WARN: jwt_self_registerable_roles set-config failed (continuing)"
-
-              echo "=== Install oan_auth_service (idempotent) + Migrate ==="
-              docker compose exec -T backend bench --site mysite.localhost install-app oan_auth_service || true
-              docker compose exec -T backend bench --site mysite.localhost migrate
-              docker compose restart frontend
-              sleep 10
-
-              echo "=== Health check (assets symlink present) ==="
-              docker compose exec -T backend bash -c 'test -L sites/assets' \
-                && echo "Health check passed (assets linked)" \
-                || { echo "FAIL: sites/assets is not a symlink"; exit 1; }
-
-              # Asset-manifest cache bust -- deterministic stop -> flush -> start.
-              # Frappe caches assets.json in the *cache* Redis under a SHARED (site-independent)
-              # key. redis-cache is NOT recreated on deploy, so the PREVIOUS build's manifest
-              # survives the image bump; new workers find it already cached (a HIT) and never
-              # re-read the new on-disk manifest -> /assets 404 -> unstyled desk. Two traps make
-              # the naive fix fail (both bit staging-aws-5/6): "bench clear-cache" is per-site and
-              # does NOT evict the shared assets_json key, and restarting only the backend lets a
-              # still-running queue/scheduler worker re-write the stale manifest right after the
-              # flush. So: stop every frappe process, flush the cache Redis while nothing can write
-              # to it, then start them so each boots and reads the CURRENT manifest from disk.
-              echo "=== Busting asset-manifest cache (stop -> flush -> start) ==="
-              docker compose stop backend websocket queue-short queue-long scheduler
-              docker compose exec -T redis-cache redis-cli flushall || true
-              docker compose up -d backend websocket queue-short queue-long scheduler
-              sleep 15
-
-              # The backend can come back on a NEW container IP after the stop/start, and frappe's
-              # frontend nginx resolves+CACHES the backend upstream IP at startup -- so it keeps
-              # dialing the dead old IP and EVERY request 502s (seen live: nginx "connect() failed
-              # (111: Connection refused) ... upstream 172.x:8000"). Restart the frontend last so it
-              # re-resolves the current backend.
-              echo "=== Re-pointing frontend at the restarted backend ==="
-              docker compose restart frontend
-              sleep 8
-
-              # Verify. Variable-free (bracket-dot regex, cmp/grep on files, no shell vars) so nothing
-              # needs escaping through the Groovy + heredoc layers. First confirm /login is served 200
-              # (catches the frontend->backend 502 above); then confirm the served asset hash matches
-              # disk (catches a stale asset cache). Both fatal.
-              echo "=== Verifying deploy ==="
-              curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/login > /tmp/a2c_stg_login_code
-              echo "login_http:"; cat /tmp/a2c_stg_login_code; echo
-              if ! grep -q 200 /tmp/a2c_stg_login_code; then
-                echo "FAIL: /login did not return 200 (frontend cannot reach backend after cache-bust)"; exit 1
-              fi
-              curl -s http://localhost:8090/login | grep -oE 'login[.]bundle[.][A-Z0-9]+[.]css' | head -1 > /tmp/a2c_stg_served
-              docker compose exec -T backend sh -c 'ls sites/assets/frappe/dist/css/' | grep -oE 'login[.]bundle[.][A-Z0-9]+[.]css' | head -1 > /tmp/a2c_stg_ondisk
-              echo "=== served manifest ==="; cat /tmp/a2c_stg_served
-              echo "=== on-disk manifest ==="; cat /tmp/a2c_stg_ondisk
-              if [ -s /tmp/a2c_stg_served ] && ! cmp -s /tmp/a2c_stg_served /tmp/a2c_stg_ondisk; then
-                echo "FAIL: served manifest does not match on-disk assets (stale asset cache)"; exit 1
-              fi
-              echo "Deploy verified (login 200, assets fresh)"
-
-              # Reclaim disk: each staging_aws deploy pulls a fresh image; -a drops the old
-              # tags no running container uses so the shared box doesn't fill up over deploys.
-              echo "=== Pruning unused images ==="
-              docker image prune -af || true
-              docker compose ps
-              } < /dev/null
-SSHEOF
-          '''
+        checkout scm
+        unstash 'built-chart'
+        withCredentials([file(credentialsId: 'oan-qa-kubeconfig', variable: 'KUBECONFIG')]) {
+          sh 'DEPLOY_ENV=staging bash ci/deploy-helm-dev.sh'
         }
       }
     }
 
-    // staging -> GitOps: bump the oan-kustomize `staging` overlay to the new image.
-    // Auth is the `oan-deployer` GitHub App (contents:write on oan-kustomize only);
-    // gitUsernamePassword mints a short-lived installation token. All kustomize
-    // logic lives in ci/update-kustomize-ati.sh.
-    stage('staging → GitOps (ArgoCD@41)') {
-      when { branch 'staging_ati' }
+    stage('staging → QA cluster (apisix)') {
+      when { beforeAgent true; branch 'staging' }
+      agent { label 'oan-ci-deploy' }
+      options { timeout(time: 15, unit: 'MINUTES') }
       steps {
-        withCredentials([
-          string(credentialsId: 'AWS_ACCOUNT_ID', variable: 'AWS_ACCOUNT_ID'),
-          gitUsernamePassword(credentialsId: 'oan-deployer', gitToolName: 'Default')
-        ]) {
-          sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            chmod +x ci/update-kustomize-ati.sh
-            # args: <overlay> <kustomize image match-name> <new image ref>
-            ci/update-kustomize-ati.sh staging oan-a2c \
-              "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMMUTABLE_TAG}"
-          '''
+        checkout scm
+        sh 'rm -rf built-gateway-chart'
+        unstash 'built-gateway-chart'
+        withCredentials([file(credentialsId: 'oan-qa-kubeconfig', variable: 'KUBECONFIG')]) {
+          sh 'GATEWAY_VALUES=helm/environments/staging/oan-a2c-gateway.yaml bash ci/deploy-gateway.sh'
         }
       }
     }
+
     // ---------------------- Helm chart publish (same name as the image) ----------------------
     // Adds the archive built by 'Package chart' to repository/develop/ of oan-helm, only after
     // the oan_dev and gateway deploys succeeded.
     stage('Publish chart') {
-      when { branch 'develop' }
+      when { anyOf { branch 'develop'; branch 'staging' } }
       steps {
         // UNSTABLE, not failed: the image is already deployed.
         catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
@@ -428,12 +301,15 @@ SSHEOF
     stage('Publish gateway chart') {
       when {
         beforeAgent true
-        allOf {
-          branch 'develop'
-          anyOf {
-            changeset 'apisix/**'
-            changeset 'openapi/**'
-            changeset 'helm/environments/dev/oan-a2c-gateway.yaml'
+        anyOf {
+          branch 'staging'
+          allOf {
+            branch 'develop'
+            anyOf {
+              changeset 'apisix/**'
+              changeset 'openapi/**'
+              changeset 'helm/environments/dev/oan-a2c-gateway.yaml'
+            }
           }
         }
       }
