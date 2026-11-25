@@ -112,7 +112,7 @@ frappe:
       host_name: https://a2c-service.qa.oanstaging.com
     # Demo data. Built and pushed alongside the service image from ci/seed.
     seed:
-      enabled: false
+      enabled: true
       image:
         repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/oan-a2c-service/a2c-seed
         tag: demo-20261108
