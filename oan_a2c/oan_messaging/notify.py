@@ -17,29 +17,22 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import frappe
+from frappe.translate import print_language
 from frappe.utils import get_system_timezone, get_time, getdate
 from oan_messaging_connector.api import queue_sms
 
-from .events import TemplateTooLong, event_for_transition, render, visit_deadline
+from .events import event_for_transition, visit_deadline
 
-#: Display language (as stored on A2C records) to message language code.
-LANGUAGES = {
-	"english": "en",
-	"en": "en",
-	"amharic": "am",
-	"am": "am",
-	"afaan oromo": "om",
-	"oromo": "om",
-	"om": "om",
-	"tigrinya": "ti",
-	"ti": "ti",
-}
 DEFAULT_VISIT_TIME = "09:00:00"
 CLOSED_STATUSES = ("Completed", "Rejected")
 
 
 def _lang(value: str | None) -> str:
-	return LANGUAGES.get((value or "").strip().lower(), "en")
+	"""Frappe Language code for a stored language: a code or a language name, else English."""
+	value = (value or "").strip()
+	if value and frappe.db.exists("Language", value):
+		return value
+	return (value and frappe.db.get_value("Language", {"language_name": value}, "name")) or "en"
 
 
 def _bank_short(bank: str | None) -> str:
@@ -60,22 +53,38 @@ def _queue(
 	fields: dict[str, str],
 	expires_at: datetime | None = None,
 ) -> str | None:
-	try:
-		text = render(event, lang, **fields)
-	except (TemplateTooLong, KeyError, ValueError) as exc:
-		frappe.log_error(f"A2C SMS not queued for {doc.name}/{event}: {exc}", "OAN Messaging")
-		return None
-	return queue_sms(
-		recipient=phone,
-		text=text,
-		purpose="transactional",
-		source_reference=f"a2c:{doc.name}:{event}",
-		reference_doctype=doc.doctype,
-		reference_name=doc.name,
-		event=event,
-		language=lang,
-		expires_at=expires_at,
-	)
+	queued = None
+	# One Notification per event: its message is the wording and ``enabled`` the switch.
+	for name in frappe.get_all(
+		"Notification",
+		filters={
+			"document_type": doc.doctype,
+			"event": "Method",
+			"method": event,
+			"channel": "SMS",
+			"enabled": 1,
+		},
+		pluck="name",
+	):
+		notification = frappe.get_doc("Notification", name)
+		context = {"doc": doc, **fields}
+		if notification.condition and not frappe.safe_eval(notification.condition, None, context):
+			continue
+		with print_language(lang):
+			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti
+			text = frappe.render_template(notification.message, context).strip()
+		queued = queue_sms(
+			recipient=phone,
+			text=text,
+			purpose="transactional",
+			source_reference=f"a2c:{doc.name}:{event}",
+			reference_doctype=doc.doctype,
+			reference_name=doc.name,
+			event=event,
+			language=lang,
+			expires_at=expires_at,
+		)
+	return queued
 
 
 def notify_application(doc: Any, event: str | None) -> str | None:

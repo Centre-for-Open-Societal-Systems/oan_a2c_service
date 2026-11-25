@@ -9,8 +9,10 @@ from unittest import mock
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from oan_messaging_connector.sms import fits_one_sms
 
 from oan_a2c.oan_messaging import events, notify
+from oan_a2c.setup.notifications import NOTIFICATION_EVENTS
 
 PHONE = "0900000711"
 APP = "APP-2026-91001"
@@ -105,7 +107,7 @@ class TestFarmerSms(IntegrationTestCase):
 		self.assertIsNone(m.expires_at)
 
 	def test_untranslated_language_falls_back_to_english(self):
-		m = self.msg(notify.notify_application(app_doc(language="Amharic"), "stage_changed"))
+		m = self.msg(notify.notify_application(app_doc(language="አማርኛ"), "stage_changed"))
 		self.assertEqual(m.language, "am")
 		self.assertTrue(m.text.startswith("OAN Credit:"))
 
@@ -169,11 +171,13 @@ class TestFarmerSms(IntegrationTestCase):
 		)
 		self.assertIsNone(events.visit_deadline(now - timedelta(hours=1), now))
 
-	def test_every_template_fits_one_sms_at_maximum_field_lengths(self):
-		fields = {k: "W" * n for k, n in events.FIELD_LIMITS.items()}
-		for event in events.A2C_EVENTS:
-			for language in events.TEMPLATES[event]:
-				events.render(event, language, **fields)  # raises TemplateTooLong if not
+	def test_every_seeded_text_fits_one_sms_at_maximum_field_lengths(self):
+		longest = {"bank": 30, "app": 14, "stage": 30, "visit": 15, "date": 11, "time": 5, "place": 40}
+		fields = {k: "W" * n for k, n in longest.items()}
+		for code, title, *_ in NOTIFICATION_EVENTS:
+			message = frappe.db.get_value("Notification", f"A2C: {title} (SMS)", "message")
+			self.assertTrue(message, code)
+			self.assertTrue(fits_one_sms(frappe.render_template(message, fields)), code)
 
 	def test_hooks_wire_the_visit_events(self):
 		hooks = frappe.get_hooks("doc_events").get("A2C Visit Schedule", {})
