@@ -139,6 +139,7 @@ def get_application(**kwargs):
 		"id_type": doc.id_type,
 		"id_number": doc.id_number,
 		"farmer_id": doc.farmer_id,
+		"fayda_id": doc.id_number if doc.id_type == "uid" else None,
 		"consent_id": doc.consent_id,
 		"loan_type": _resolve_loan_type(doc),
 		"loan_product": doc.loan_product,
