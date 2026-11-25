@@ -69,6 +69,8 @@ class GetAllLoansSchema(BaseModel):
 	woreda: str | None = Field(None, max_length=140)
 	kebele: str | None = Field(None, max_length=140)
 	phone_number: str | None = Field(None, max_length=50)
+	farmer_id: str | None = Field(None, max_length=140)
+	fayda_id: str | None = Field(None, max_length=140)
 	loan_officer: str | None = Field(None, max_length=140)
 	from_date: SafeDate = None
 	to_date: SafeDate = None
@@ -417,11 +419,7 @@ def get_full_profile(**kwargs):
 	doc = _get_app(application_id)
 	status_info = status_payload(doc)
 
-	farmer_id = doc.farmer_id
-	if doc.id_type == "uid" and doc.id_number:
-		farmer_id = doc.id_number
-	elif doc.consent_id:
-		farmer_id = frappe.db.get_value("A2C Consent Request", doc.consent_id, "farmer_fayda_id") or farmer_id
+	fayda_id = doc.id_number if doc.id_type == "uid" else None
 
 	loan_officer_name = None
 	if doc.loan_officer:
@@ -443,7 +441,8 @@ def get_full_profile(**kwargs):
 		"phone_number": doc.phone_number,
 		"id_type": doc.id_type,
 		"id_number": doc.id_number,
-		"farmer_id": farmer_id,
+		"farmer_id": doc.farmer_id,
+		"fayda_id": fayda_id,
 		"consent_id": doc.consent_id,
 		"loan_type": _resolve_loan_type(doc),
 		"loan_product": doc.loan_product,
@@ -614,6 +613,8 @@ def get_all_loans(**kwargs):
 	woreda = kwargs.get("woreda")
 	kebele = kwargs.get("kebele")
 	phone_number = kwargs.get("phone_number")
+	farmer_id = kwargs.get("farmer_id")
+	fayda_id = kwargs.get("fayda_id")
 	from_date = kwargs.get("from_date")
 	to_date = kwargs.get("to_date")
 	loan_officer = kwargs.get("loan_officer")
@@ -667,6 +668,13 @@ def get_all_loans(**kwargs):
 	if phone_number:
 		filters["phone_number"] = ("like", f"{phone_number}%")
 
+	if farmer_id:
+		filters["farmer_id"] = ("like", f"{farmer_id}%")
+
+	if fayda_id:
+		filters["id_type"] = "uid"
+		filters["id_number"] = ("like", f"{fayda_id}%")
+
 	# Assignment tab filter: exactly three options, matching get_loan_summary's
 	# tab_counts -- "all" (no filter), "my" (loans where the caller is the officer),
 	# "unassigned" (no officer). Any other value is ignored (treated as "all").
@@ -690,6 +698,7 @@ def get_all_loans(**kwargs):
 		or_filters.append(["name", "like", search_query_param])
 		or_filters.append(["phone_number", "like", search_query_param])
 		or_filters.append(["farmer_id", "like", search_query_param])
+		or_filters.append(["id_number", "like", search_query_param])
 		or_filters.append(["first_name", "like", search_query_param])
 		or_filters.append(["last_name", "like", search_query_param])
 		or_filters.append(["loan_product_name", "like", search_query_param])
@@ -728,6 +737,9 @@ def get_all_loans(**kwargs):
 		"woreda",
 		"kebele",
 		"phone_number",
+		"farmer_id",
+		"id_type",
+		"id_number",
 		"creation",
 		"submitted_at",
 	]
@@ -748,6 +760,7 @@ def get_all_loans(**kwargs):
 	build_status_payloads(records)
 	_batch_resolve_loan_types(records)
 	for r in records:
+		r["fayda_id"] = r["id_number"] if r.get("id_type") == "uid" else None
 		r["loan_amount"] = float(r["loan_amount"]) if r.get("loan_amount") else 0.0
 		if can_see_step:
 			r["step"] = cint(r.get("step"))
@@ -1050,6 +1063,12 @@ def create_loan_application(**kwargs):
 	# The registry may hold no phone for the farmer; the agent captured one on the lead.
 	if not loan_app.phone_number:
 		loan_app.phone_number = lead_doc.get("phone_number")
+
+	if not loan_app.id_number and loan_app.consent_id:
+		fayda_id = frappe.db.get_value("A2C Consent Request", loan_app.consent_id, "farmer_fayda_id")
+		if fayda_id:
+			loan_app.id_type = "uid"
+			loan_app.id_number = fayda_id
 
 	loan_app.loan_type = credit_info.loan_type
 	loan_app.loan_amount = flt(credit_info.loan_amount)

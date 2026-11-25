@@ -312,6 +312,42 @@ class TestLoansV1API(ApiTestCase):
 		self.assertEqual(res_miss["status"], "success")
 		self.assertFalse(any(r["application_id"] == self.app_id for r in res_miss["data"]))
 
+	def test_2c_get_all_loans_farmer_and_fayda_id_search(self):
+		"""`get_all_loans` filters by farmer_id/fayda_id and `search_query` matches both without mutating farmer_id."""
+		frappe.db.set_value(
+			"A2C Loan Application",
+			self.app_id,
+			{"farmer_id": "FRM-TEST-001", "id_type": "uid", "id_number": "FAYDA-TEST-999"},
+		)
+
+		res_farmer = get_all_loans(farmer_id="FRM-TEST")
+		self.assertEqual(res_farmer["status"], "success")
+		row = next(r for r in res_farmer["data"] if r["application_id"] == self.app_id)
+		self.assertEqual(row["farmer_id"], "FRM-TEST-001")
+		self.assertEqual(row["fayda_id"], "FAYDA-TEST-999")
+
+		res_fayda = get_all_loans(fayda_id="FAYDA-TEST")
+		self.assertEqual(res_fayda["status"], "success")
+		self.assertTrue(any(r["application_id"] == self.app_id for r in res_fayda["data"]))
+
+		res_search_fayda = get_all_loans(search_query="FAYDA-TEST-999")
+		self.assertEqual(res_search_fayda["status"], "success")
+		self.assertTrue(any(r["application_id"] == self.app_id for r in res_search_fayda["data"]))
+
+		res_search_farmer = get_all_loans(search_query="FRM-TEST-001")
+		self.assertEqual(res_search_farmer["status"], "success")
+		self.assertTrue(any(r["application_id"] == self.app_id for r in res_search_farmer["data"]))
+
+		# get_full_profile keeps farmer_id and fayda_id distinct
+		profile = get_full_profile(application_id=self.app_id)["data"]
+		self.assertEqual(profile["farmer_id"], "FRM-TEST-001")
+		self.assertEqual(profile["fayda_id"], "FAYDA-TEST-999")
+
+		# Non-matching filter excludes the row
+		res_miss = get_all_loans(fayda_id="NO-SUCH-FAYDA")
+		self.assertEqual(res_miss["status"], "success")
+		self.assertFalse(any(r["application_id"] == self.app_id for r in res_miss["data"]))
+
 	def test_2e_get_all_loans_status_filters_the_bank_stage(self):
 		"""`status` filters by stage label, stage_id, external_code or 'Active'."""
 		res_active = get_all_loans(status="Active")
