@@ -78,6 +78,17 @@ openg2pSettings:
 openg2pPartnerSecret:
   name: oan-a2c-openg2p-partner
 
+# Fields of `OAN Messaging Settings`, written into the DB by the same Job.
+# Field names are the DocType's; values are templates. Empty values are skipped.
+messagingSettings:
+  enabled: 1
+  base_url: "https://oan-messaging.{{ .Values.global.baseDomain }}"
+
+# Secret with the OAN Messaging caller token (key `token`), created once per environment.
+# Missing key or Secret keeps the DB value. Empty name: no token from Kubernetes.
+messagingSecret:
+  name: oan-a2c-messaging
+
 siteSettingsJob:
   backoffLimit: 3
   ttlSecondsAfterFinished: 86400

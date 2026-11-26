@@ -1,4 +1,4 @@
-{{- if or .Values.iamServices .Values.openg2pSettings }}
+{{- if or .Values.iamServices .Values.openg2pSettings .Values.messagingSettings }}
 {{- /*
 Writes iamServices (`OAN IAM Service` rows) and openg2pSettings (`A2C OpenG2P Settings`) into the DB
 of the site on every install and upgrade, the way the OpenG2P IAM seeds its login_providers table from
@@ -17,6 +17,7 @@ The Job reuses the image, service account, security context and sites volume of 
 {{- $fullname := include "frappe.fullname" $frappe }}
 {{- $job := .Values.siteSettingsJob }}
 {{- $partner := .Values.openg2pPartnerSecret }}
+{{- $messagingSecret := .Values.messagingSecret }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -28,6 +29,7 @@ type: Opaque
 stringData:
   iam_services.json: {{ tpl (toJson (default list .Values.iamServices)) . | quote }}
   openg2p_settings.json: {{ tpl (toJson (default dict .Values.openg2pSettings)) . | quote }}
+  messaging_settings.json: {{ tpl (toJson (default dict .Values.messagingSettings)) . | quote }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -83,6 +85,11 @@ spec:
             secretKeyRef:
               name: {{ $fullname }}-site-settings
               key: openg2p_settings.json
+        - name: OAN_MESSAGING_SETTINGS
+          valueFrom:
+            secretKeyRef:
+              name: {{ $fullname }}-site-settings
+              key: messaging_settings.json
         {{- if $partner.name }}
         {{- range $env, $key := dict "OAN_OPENG2P_PARTNER_CLIENT_ID" "client_id" "OAN_OPENG2P_PARTNER_CLIENT_SECRET" "client_secret" "OAN_OPENG2P_PARTNER_USERNAME" "username" "OAN_OPENG2P_PARTNER_PASSWORD" "password" }}
         - name: {{ $env }}
@@ -92,6 +99,14 @@ spec:
               key: {{ $key }}
               optional: true
         {{- end }}
+        {{- end }}
+        {{- if $messagingSecret.name }}
+        - name: OAN_MESSAGING_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $messagingSecret.name }}
+              key: token
+              optional: true
         {{- end }}
         volumeMounts:
         - name: sites-dir
