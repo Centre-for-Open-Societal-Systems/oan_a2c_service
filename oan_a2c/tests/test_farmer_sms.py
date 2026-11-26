@@ -62,7 +62,14 @@ class TestFarmerSms(IntegrationTestCase):
 		frappe.conf.oan_messaging_base_url = "https://oan-messaging.example.invalid"
 		frappe.conf.oan_messaging_token = "oanmsg_" + "t" * 43
 		self.addCleanup(self._restore_conf)
-		phone = mock.patch.object(notify, "_lead_phone", return_value=PHONE)
+		real_get_value = frappe.db.get_value
+		phone = mock.patch.object(
+			frappe.db,
+			"get_value",
+			side_effect=lambda doctype, *a, **kw: PHONE
+			if doctype == "A2C Lead"
+			else real_get_value(doctype, *a, **kw),
+		)
 		phone.start()
 		self.addCleanup(phone.stop)
 

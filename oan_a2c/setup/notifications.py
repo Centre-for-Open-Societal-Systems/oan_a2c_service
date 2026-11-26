@@ -103,5 +103,7 @@ def seed_notifications() -> None:
 				# desk edits outside developer mode.
 				"is_standard": 0,
 				"enabled": 1,
+				# Core requires at least one recipient row; notify.py resolves the phone itself.
+				"recipients": [{"receiver_by_document_field": "owner"}],
 			}
 		).insert(ignore_permissions=True)

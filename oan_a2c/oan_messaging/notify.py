@@ -27,24 +27,6 @@ DEFAULT_VISIT_TIME = "09:00:00"
 CLOSED_STATUSES = ("Completed", "Rejected")
 
 
-def _lang(value: str | None) -> str:
-	"""Frappe Language code for a stored language: a code or a language name, else English."""
-	value = (value or "").strip()
-	if value and frappe.db.exists("Language", value):
-		return value
-	return (value and frappe.db.get_value("Language", {"language_name": value}, "name")) or "en"
-
-
-def _bank_short(bank: str | None) -> str:
-	name = (frappe.db.get_value("A2C Participating Bank", bank, "bank_name") if bank else "") or ""
-	name = name.strip() or "your bank"
-	return name if len(name) <= 30 else name[:29].rstrip() + "."
-
-
-def _lead_phone(lead: str | None) -> str | None:
-	return frappe.db.get_value("A2C Lead", lead, "phone_number") if lead else None
-
-
 def _queue(
 	event: str,
 	doc: Any,
@@ -91,12 +73,23 @@ def notify_application(doc: Any, event: str | None) -> str | None:
 	"""Queue ``event`` about a loan application; returns the OAN Message name or None."""
 	if not event:
 		return None
+	bank = doc.get("bank")
+	bank_name = (
+		(frappe.db.get_value("A2C Participating Bank", bank, "bank_name") if bank else "") or ""
+	).strip() or "your bank"
+	if len(bank_name) > 30:
+		bank_name = bank_name[:29].rstrip() + "."
+	raw_lang = (doc.get("language") or "").strip()
+	if raw_lang and frappe.db.exists("Language", raw_lang):
+		lang = raw_lang
+	else:
+		lang = (raw_lang and frappe.db.get_value("Language", {"language_name": raw_lang}, "name")) or "en"
 	fields = {
-		"bank": _bank_short(doc.get("bank")),
+		"bank": bank_name,
 		"app": doc.name,
 		"stage": (doc.get("stage_label") or "")[:30],
 	}
-	return _queue(event, doc, doc.get("phone_number"), _lang(doc.get("language")), fields)
+	return _queue(event, doc, doc.get("phone_number"), lang, fields)
 
 
 def notify_status_change(
@@ -113,33 +106,33 @@ def notify_status_change(
 	return notify_application(doc, event)
 
 
-def _visit_start(schedule: Any) -> datetime | None:
+def notify_visit(schedule: Any, event: str) -> str | None:
+	"""Queue a visit event; it expires when the visit starts. None for a past visit."""
 	if not schedule.get("visit_date"):
 		return None
 	# Time fields arrive as timedelta (loaded) or as strings such as "9:00" (from the API).
-	local = datetime.combine(
-		getdate(schedule.visit_date), get_time(schedule.get("visit_time") or DEFAULT_VISIT_TIME)
+	tz = ZoneInfo(get_system_timezone())
+	start = (
+		datetime.combine(
+			getdate(schedule.visit_date), get_time(schedule.get("visit_time") or DEFAULT_VISIT_TIME)
+		)
+		.replace(tzinfo=tz)
+		.astimezone(UTC)
 	)
-	return local.replace(tzinfo=ZoneInfo(get_system_timezone())).astimezone(UTC)
-
-
-def notify_visit(schedule: Any, event: str) -> str | None:
-	"""Queue a visit event; it expires when the visit starts. None for a past visit."""
-	start = _visit_start(schedule)
-	if start is None:
-		return None
 	deadline = visit_deadline(start, datetime.now(UTC))
 	if deadline is None:
 		return None
-	local = start.astimezone(ZoneInfo(get_system_timezone()))
+	local = start.astimezone(tz)
 	place = (schedule.get("meeting_location") or schedule.get("kebele") or "the agreed place").strip()
+	lead = schedule.get("lead")
+	phone = frappe.db.get_value("A2C Lead", lead, "phone_number") if lead else None
 	fields = {
 		"visit": schedule.name,
 		"date": f"{local.day} {local:%b %Y}",
 		"time": f"{local:%H:%M}",
 		"place": place[:40],
 	}
-	return _queue(event, schedule, _lead_phone(schedule.get("lead")), "en", fields, expires_at=deadline)
+	return _queue(event, schedule, phone, "en", fields, expires_at=deadline)
 
 
 def _never_block(event: str, doc: Any) -> None:
