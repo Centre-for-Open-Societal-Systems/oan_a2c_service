@@ -223,4 +223,5 @@ frappe:
       adminExistingSecret: oan-a2c-admin
       installApps:
       - oan_auth_service
+      - oan_messaging_connector
       - oan_a2c
