@@ -2,7 +2,7 @@
 
 One Notification per event on core's "Method" trigger: ``oan_messaging/notify.py`` fires
 them explicitly from the code that changes an application or visit, finds them by event
-code and hands the rendered text to ``oan_messaging_connector``. The wording, and whether
+code and hands the rendered text to ``oan_messaging_service``. The wording, and whether
 an event sends at all, is therefore editable on the desk. Existing records are never
 overwritten, so an admin's edits survive a migrate.
 

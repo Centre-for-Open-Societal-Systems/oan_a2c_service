@@ -9,7 +9,7 @@ app_license = "mit"
 # Apps
 # ------------------
 
-required_apps = ["oan_auth_service", "oan_messaging_connector"]
+required_apps = ["oan_auth_service", "oan_messaging_service"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -193,7 +193,7 @@ doc_events = {
 		"on_update": "oan_a2c.a2c_marketplace.stats_cache.on_application_change",
 		"on_trash": "oan_a2c.a2c_marketplace.stats_cache.on_application_change",
 	},
-	# Farmer SMS through oan_messaging_connector (oan_a2c/oan_messaging/notify.py).
+	# Farmer SMS through oan_messaging_service (oan_a2c/oan_messaging/notify.py).
 	"A2C Visit Schedule": {
 		"after_insert": "oan_a2c.oan_messaging.notify.on_visit_insert",
 		"on_update": "oan_a2c.oan_messaging.notify.on_visit_update",
