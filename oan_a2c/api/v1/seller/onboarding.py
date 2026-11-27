@@ -23,6 +23,7 @@ from oan_a2c.api.router import prefixed
 from oan_a2c.api.utils import (
 	RequiredPhone,
 	SafeEmail,
+	UserEmail,
 	handle_api_errors,
 	success_response,
 	validate_request,
@@ -211,7 +212,7 @@ def _validate_temp_password(v: str) -> str:
 
 
 class InviteTeamMemberSchema(BaseModel):
-	email: SafeEmail
+	email: UserEmail
 	full_name: str = Field(..., min_length=2, max_length=140)
 	# Bank Admins may only create Bank Agents. The field stays in the contract so
 	# an explicit role is validated and rejected rather than silently ignored.
@@ -225,7 +226,7 @@ class InviteTeamMemberSchema(BaseModel):
 
 
 class ResetMemberPasswordSchema(BaseModel):
-	email: SafeEmail
+	email: UserEmail
 	password: str = Field(..., min_length=8, max_length=64)
 
 	@field_validator("password")
@@ -832,7 +833,7 @@ def list_users():
 # 7. update_user
 # -----------------
 class UpdateUserSchema(BaseModel):
-	email: SafeEmail
+	email: UserEmail
 	full_name: str | None = Field(None, max_length=140)
 	role: str | None = Field(None, max_length=140)
 	enabled: bool | None = None
