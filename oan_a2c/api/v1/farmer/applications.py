@@ -139,6 +139,7 @@ def get_application(**kwargs):
 		"id_type": doc.id_type,
 		"id_number": doc.id_number,
 		"farmer_id": doc.farmer_id,
+		"fayda_id": doc.id_number if doc.id_type == "uid" else None,
 		"consent_id": doc.consent_id,
 		"loan_type": _resolve_loan_type(doc),
 		"loan_product": doc.loan_product,
@@ -307,6 +308,10 @@ def submit_application(**kwargs):
 	apply_status_transition(doc, "In Transition")
 	submitted_at = now_datetime()
 	doc.db_set("submitted_at", submitted_at)
+
+	from oan_a2c.oan_messaging.notify import notify_application
+
+	notify_application(doc, "application_submitted")
 
 	return success_response(
 		data={"submitted_at": to_tz_aware_iso(submitted_at)},

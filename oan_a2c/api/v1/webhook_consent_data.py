@@ -184,6 +184,9 @@ def process_consent_data(data, consent_doc_name, consent_request_id):
 			# blob captured by an earlier delivery survives.
 			"farmer_data_json": raw_consent_data_str if validated.selected_data is not None else None,
 		}
+		if not updates.get("id_number") and consent_doc.farmer_fayda_id:
+			updates["id_type"] = "uid"
+			updates["id_number"] = consent_doc.farmer_fayda_id
 
 		# Identity for the upsert is the *account*, not the Fayda identity: one profile
 		# per registered farmer, so a redelivery of the same webhook resolves to the

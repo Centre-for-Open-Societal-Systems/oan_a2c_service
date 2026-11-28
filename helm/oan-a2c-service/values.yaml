@@ -10,6 +10,8 @@
 # - oan-a2c-admin (key `password`): Frappe Administrator password
 # - oan-a2c-jwt (key `jwt_v1.pem`): RSA private key that signs access tokens
 # - oan-a2c-secret-key (key `secret_key`): signs consent receipts
+# - a2c-frappe-service-credential (key `authorization`): `token <api_key>:<api_secret>` of the partner
+#   service user. frappe.apiCredential sets it on that user; the APISIX chart copies it to the gateway
 # Secrets created outside Git, in the release namespace:
 # - oan-frappe-common-db (key `password`): the `postgres` password, copied from the frappe-common namespace
 # - oan-a2c-sentry (key `dsn`): Sentry DSN. Optional.
@@ -28,6 +30,12 @@ secrets:
   jwt:
     create: true
     name: oan-a2c-jwt
+  # Token of the A2C Partner Service user (created by oan_a2c install and migrate). The gateway
+  # sends it to Frappe on the partner routes. frappe.apiCredential below sets it on that user,
+  # so the gateway and Frappe share one value.
+  frappeService:
+    create: true
+    name: a2c-frappe-service-credential
 
 global:
   # Domain of the environment, e.g. development.oanstaging.com. iamServices builds its hosts from it.
@@ -78,6 +86,17 @@ openg2pSettings:
 openg2pPartnerSecret:
   name: oan-a2c-openg2p-partner
 
+# Fields of `OAN Messaging Settings`, written into the DB by the same Job.
+# Field names are the DocType's; values are templates. Empty values are skipped.
+messagingSettings:
+  enabled: 1
+  base_url: "https://oan-messaging.{{ .Values.global.baseDomain }}"
+
+# Secret with the OAN Messaging caller token (key `token`), created once per environment.
+# Missing key or Secret keeps the DB value. Empty name: no token from Kubernetes.
+messagingSecret:
+  name: oan-a2c-messaging
+
 siteSettingsJob:
   backoffLimit: 3
   ttlSecondsAfterFinished: 86400
@@ -85,6 +104,12 @@ siteSettingsJob:
   attempts: 20
 
 frappe:
+  apiCredential:
+    enabled: true
+    users:
+      - user: a2c-partner-service@id.openagrinet.internal
+        secretName: a2c-frappe-service-credential
+
   image:
     # Set per environment. package_chart.py needs both keys to exist.
     repository: ""
@@ -212,4 +237,5 @@ frappe:
       adminExistingSecret: oan-a2c-admin
       installApps:
       - oan_auth_service
+      - oan_messaging_connector
       - oan_a2c
