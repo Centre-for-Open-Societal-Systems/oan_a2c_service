@@ -59,14 +59,12 @@ web:
         httpCodes: [500, 502, 503, 504]
 
 
-# Source addresses allowed on the partner webhook routes. Development defaults; narrow to
-# the partners' egress CIDRs (OpenG2P, telco IVR) before go-live.
+# Source addresses allowed on the partner webhook routes. Open for now so the partner and
+# vendor integrations can be tested from anywhere; the API key (key-auth) still applies.
+# Narrow to the partners' egress CIDRs (OpenG2P, telco IVR) before go-live.
 ipAllowlist:
-  - 127.0.0.1/32
-  - ::1/128
-  - 10.0.0.0/8
-  - 172.16.0.0/12
-  - 192.168.0.0/16
+  - 0.0.0.0/0
+  - ::/0
 
 # Localhost only until the A2C UI hosts are confirmed.
 corsOriginRegexes:
