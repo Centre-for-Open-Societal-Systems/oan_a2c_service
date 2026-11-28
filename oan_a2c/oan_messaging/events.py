@@ -1,7 +1,7 @@
 """Credit (A2C) farmer SMS: events and texts.
 
 A2C owns which events reach the farmer; the texts are Notification records. Sending (outbox, keys,
-dispatch, status) belongs to ``oan_messaging_connector``; see ``notify.py``.
+dispatch, status) belongs to ``oan_messaging_service``; see ``notify.py``.
 
 ======================  ===================================================================
 Event                   Raised by

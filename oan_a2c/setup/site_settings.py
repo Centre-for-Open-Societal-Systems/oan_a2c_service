@@ -10,7 +10,7 @@ import os
 
 import frappe
 from frappe import _
-from oan_messaging_connector.site_settings import sync_settings as sync_messaging_settings
+from oan_messaging_service.site_settings import sync_settings as sync_messaging_settings
 
 IAM_SERVICE_DOCTYPE = "OAN IAM Service"
 OPENG2P_SETTINGS_DOCTYPE = "A2C OpenG2P Settings"

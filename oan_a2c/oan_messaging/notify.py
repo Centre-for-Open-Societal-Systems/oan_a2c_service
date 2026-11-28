@@ -1,4 +1,4 @@
-"""Credit (A2C) farmer SMS: raise events through ``oan_messaging_connector.queue_sms``.
+"""Credit (A2C) farmer SMS: raise events through ``oan_messaging_service.queue_sms``.
 
 Application events are raised from the API functions that change the application
 (``submit_application``, ``update_loan_status``), not from ``on_update``: A2C mirrors
@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import frappe
 from frappe.translate import print_language
 from frappe.utils import get_system_timezone, get_time, getdate
-from oan_messaging_connector.api import queue_sms
+from oan_messaging_service.api import queue_sms
 
 from .events import event_for_transition, visit_deadline
 
