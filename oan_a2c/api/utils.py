@@ -465,6 +465,18 @@ def validate_email_string(v):
 	return v
 
 
+def validate_user_email_string(v):
+	"""Validate an email that names a User and return it as Frappe stores it.
+
+	`User.autoname` stores the name as `email.strip().lower()`. Postgres compares names
+	case-sensitively, so a lookup with the address as typed (`VibhuT@x.in`) misses the
+	user created as `vibhut@x.in`. Normalising here keeps every later lookup, and the
+	comparison with `frappe.session.user`, on the stored name.
+	"""
+	v = validate_email_string(v)
+	return v.strip().lower() if v else v
+
+
 def validate_phone_string(v):
 	"""Validate a phone number with oan_auth_service's `validate_mobile`.
 
@@ -506,6 +518,7 @@ def validate_required_phone_string(v):
 
 SafeDate = Annotated[str | None, BeforeValidator(validate_date_string)]
 SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
+UserEmail = Annotated[str, BeforeValidator(validate_user_email_string)]
 SafePhone = Annotated[str | None, BeforeValidator(validate_phone_string)]
 RequiredPhone = Annotated[str, BeforeValidator(validate_required_phone_string)]
 
